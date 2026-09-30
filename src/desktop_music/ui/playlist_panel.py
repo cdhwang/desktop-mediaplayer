@@ -72,6 +72,19 @@ class _TrackDelegate(QStyledItemDelegate):
         return size
 
 
+class _PlaylistView(QListView):
+    """QListView that emits ``delete_pressed`` when Delete/Backspace is hit."""
+
+    delete_pressed = pyqtSignal()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.delete_pressed.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class PlaylistPanel(QWidget):
     """Right-hand playlist panel."""
 
@@ -110,7 +123,7 @@ class PlaylistPanel(QWidget):
         self._search.textChanged.connect(self._proxy.set_query)
         self._search.hide()
 
-        self._view = QListView()
+        self._view = _PlaylistView()
         self._view.setObjectName("playlistView")
         self._view.setModel(self._proxy)
         self._view.setItemDelegate(_TrackDelegate(self._view))
@@ -120,6 +133,7 @@ class PlaylistPanel(QWidget):
         self._view.doubleClicked.connect(
             lambda index: self.track_activated.emit(self._proxy.to_source_row(index.row()))
         )
+        self._view.delete_pressed.connect(self._remove_selected)
 
         # bottom toolbar: ADD / DEL / SORT + search toggle
         self._add_btn = self._tool_btn("ADD", self.add_files_requested)
@@ -154,7 +168,7 @@ class PlaylistPanel(QWidget):
         return btn
 
     @property
-    def view(self) -> QListView:
+    def view(self) -> _PlaylistView:
         return self._view
 
     @property

@@ -139,6 +139,45 @@ def test_panel_double_click_emits(qtbot) -> None:
     assert blocker.args == [1]
 
 
+def test_panel_delete_key_removes_selected(qtbot) -> None:
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtWidgets import QApplication
+
+    model = PlaylistModel()
+    model.add_paths(["/a.mp3", "/b.mp3", "/c.mp3"])
+    panel = PlaylistPanel(model)
+    qtbot.addWidget(panel)
+
+    # select the middle row and press Delete
+    panel.view.setCurrentIndex(panel.proxy.index(1, 0))
+    event = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Delete, Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(panel.view, event)
+
+    paths = [t.path for t in model.tracks]
+    assert paths == ["/a.mp3", "/c.mp3"]
+
+
+def test_panel_delete_key_removes_multiple(qtbot) -> None:
+    from PyQt6.QtCore import QItemSelectionModel, Qt
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtWidgets import QApplication
+
+    model = PlaylistModel()
+    model.add_paths(["/a.mp3", "/b.mp3", "/c.mp3", "/d.mp3"])
+    panel = PlaylistPanel(model)
+    qtbot.addWidget(panel)
+
+    sel = panel.view.selectionModel()
+    for r in (0, 2):
+        sel.select(panel.proxy.index(r, 0), QItemSelectionModel.SelectionFlag.Select)
+    event = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Delete, Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(panel.view, event)
+
+    paths = [t.path for t in model.tracks]
+    assert paths == ["/b.mp3", "/d.mp3"]
+
+
 # -- scan_dir_flat (CLI open-in-folder) ------------------------------------
 
 
