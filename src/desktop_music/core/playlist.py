@@ -240,3 +240,21 @@ def _scan_dir(directory: str) -> list[str]:
                 found.append(os.path.join(root, name))
     found.sort()
     return found
+
+
+def scan_dir_flat(directory: str) -> list[str]:
+    """Collect supported media files directly in *directory* (non-recursive).
+
+    Returns absolute paths, sorted.
+    """
+    found: list[str] = []
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return found
+    for name in entries:
+        full = os.path.abspath(os.path.join(directory, name))
+        if os.path.isfile(full) and os.path.splitext(name)[1].lower() in MEDIA_EXTENSIONS:
+            found.append(full)
+    found.sort()
+    return found

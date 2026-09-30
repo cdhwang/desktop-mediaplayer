@@ -27,11 +27,23 @@ def create_app(argv: list[str] | None = None) -> QApplication:
 
 
 def run(argv: list[str] | None = None) -> int:
-    """Launch the GUI event loop. Returns the process exit code."""
+    """Launch the GUI event loop. Returns the process exit code.
+
+    Any positional command-line arguments are treated as media files to
+    open. When files are given, the playlist is populated with every
+    playable file in the directory of the *first* argument, and playback
+    starts on that first argument.
+    """
     from desktop_music.ui.main_window import MainWindow
 
     app = create_app(argv)
-    window = MainWindow()
+
+    raw_args = argv if argv is not None else sys.argv
+    # QApplication strips recognised Qt options; use its remaining args.
+    remaining = app.arguments()[1:] if len(app.arguments()) > 1 else raw_args[1:]
+    initial_media = [a for a in remaining if not a.startswith("-")]
+
+    window = MainWindow(initial_media=initial_media or None)
     window.show()
     return app.exec()
 

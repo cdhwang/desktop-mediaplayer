@@ -38,7 +38,6 @@ def test_add_paths_scans_directory(tmp_path) -> None:
     sub = tmp_path / "sub"
     sub.mkdir()
     (sub / "c.wav").write_bytes(b"")
-
     m = PlaylistModel()
     count = m.add_paths([str(tmp_path)])
     assert count == 3
@@ -138,3 +137,28 @@ def test_panel_double_click_emits(qtbot) -> None:
         idx = model.index(1, 0)
         panel.view.doubleClicked.emit(idx)
     assert blocker.args == [1]
+
+
+# -- scan_dir_flat (CLI open-in-folder) ------------------------------------
+
+
+def test_scan_dir_flat_is_nonrecursive_sorted_absolute(tmp_path) -> None:
+    from desktop_music.core.playlist import scan_dir_flat
+
+    (tmp_path / "b.mp3").write_bytes(b"")
+    (tmp_path / "a.flac").write_bytes(b"")
+    (tmp_path / "c.mp4").write_bytes(b"")
+    (tmp_path / "note.txt").write_bytes(b"")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "deep.mp3").write_bytes(b"")
+
+    found = scan_dir_flat(str(tmp_path))
+    assert [os.path.basename(p) for p in found] == ["a.flac", "b.mp3", "c.mp4"]
+    assert all(os.path.isabs(p) for p in found)
+
+
+def test_scan_dir_flat_missing_directory() -> None:
+    from desktop_music.core.playlist import scan_dir_flat
+
+    assert scan_dir_flat("/no/such/dir/hopefully") == []

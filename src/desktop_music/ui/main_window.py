@@ -17,9 +17,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from desktop_music.constants import APP_NAME, MEDIA_EXTENSIONS
+from desktop_music.constants import APP_NAME, MEDIA_EXTENSIONS, is_media
 from desktop_music.core.controller import PlayerController
-from desktop_music.core.playlist import PlaylistModel
+from desktop_music.core.playlist import PlaylistModel, scan_dir_flat
 from desktop_music.core.shortcuts import ShortcutManager
 from desktop_music.services.backend import PlaybackState
 from desktop_music.services.equalizer import PRESET_NONE, EqualizerService
@@ -42,6 +42,7 @@ class MainWindow(QMainWindow):
         controller: PlayerController | None = None,
         settings: SettingsStore | None = None,
         parent: QWidget | None = None,
+        initial_media: list[str] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(APP_NAME)
@@ -60,6 +61,8 @@ class MainWindow(QMainWindow):
         self._connect()
         self._restore_state()
         self._shortcuts.rebind_all()
+        if initial_media:
+            self._open_initial_media(initial_media)
 
     @property
     def controller(self) -> PlayerController:
@@ -301,6 +304,44 @@ class MainWindow(QMainWindow):
         ctrl.set_volume(cb._volume_slider.value())
 
     # -- file dialogs ------------------------------------------------------
+
+    def _open_initial_media(self, args: list[str]) -> None:
+        """Handle media given as command-line arguments.
+
+        The playlist is (re)populated with every playable file in the
+        directory of the first argument, and playback starts on that file.
+        Directories passed as arguments are added recursively; the first
+        playable track found is played.
+        """
+        import os
+
+        first = args[0]
+        if os.path.isdir(first):
+            self._playlist.clear()
+            added = self._playlist.add_paths(args)
+            if added > 0:
+                self._controller.play_row(0)
+            return
+
+        if not os.path.isfile(first):
+            return
+
+        directory = os.path.dirname(os.path.abspath(first)) or "."
+        siblings = scan_dir_flat(directory)
+        target = os.path.abspath(first)
+        # ensure the requested file is present even if its extension check
+        # or the directory scan somehow missed it
+        if target not in siblings and is_media(target):
+            siblings.append(target)
+            siblings.sort()
+
+        self._playlist.clear()
+        self._playlist.add_paths(siblings)
+        try:
+            row = siblings.index(target)
+        except ValueError:
+            row = 0
+        self._controller.play_row(row)
 
     def _open_files_dialog(self) -> None:
         patterns = " ".join(f"*{ext}" for ext in sorted(MEDIA_EXTENSIONS))
