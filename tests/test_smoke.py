@@ -1,0 +1,96 @@
+"""Smoke tests for the application shell (Task 1)."""
+
+from __future__ import annotations
+
+from desktop_music.constants import (
+    is_audio,
+    is_media,
+    is_video,
+)
+from desktop_music.ui.main_window import MainWindow
+
+
+def test_import_package() -> None:
+    import desktop_music
+
+    assert desktop_music.__version__
+
+
+def test_main_window_creates(qtbot) -> None:
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert window.windowTitle() == "Desktop Music"
+
+
+def test_extension_helpers() -> None:
+    assert is_audio("song.MP3")
+    assert is_audio("track.flac")
+    assert not is_audio("clip.mp4")
+
+    assert is_video("clip.mp4")
+    assert is_video("movie.MKV")
+    assert not is_video("song.mp3")
+
+    assert is_media("song.mp3")
+    assert is_media("clip.avi")
+    assert not is_media("notes.txt")
+
+
+# -- Task 15: menu bar, theme, full integration ----------------------------
+
+
+def _integration_window(qtbot, tmp_path):
+    from unittest.mock import MagicMock
+
+    from desktop_music.core.controller import PlayerController
+    from desktop_music.services.backend import PlaybackState
+    from desktop_music.services.settings import SettingsStore
+
+    backend = MagicMock()
+    backend.get_state.return_value = PlaybackState.IDLE
+    backend.get_time.return_value = 0
+    backend.get_length.return_value = 0
+    backend.get_volume.return_value = 80
+    backend.is_muted.return_value = False
+    backend.audio_tracks.return_value = [(0, "Track 1")]
+    backend.subtitle_tracks.return_value = []
+    controller = PlayerController(backend=backend)
+    controller._timer.stop()
+    window = MainWindow(
+        controller=controller, settings=SettingsStore(str(tmp_path / "s.json"))
+    )
+    qtbot.addWidget(window)
+    return window, backend
+
+
+def test_menu_bar_has_expected_menus(qtbot, tmp_path) -> None:
+    window, _backend = _integration_window(qtbot, tmp_path)
+    titles = [a.text() for a in window.menuBar().actions()]
+    assert "&File" in titles
+    assert "&View" in titles
+    assert "&Playback" in titles
+    assert "&Tools" in titles
+
+
+def test_theme_applied(qtbot) -> None:
+    from desktop_music.app import create_app
+
+    app = create_app([])
+    assert "background-color" in app.styleSheet()
+
+
+def test_view_menu_switches_pages(qtbot, tmp_path) -> None:
+    window, _backend = _integration_window(qtbot, tmp_path)
+    window.show_lyrics()
+    assert window._central_display.current_page == "lyrics"
+    window.show_album_art()
+    assert window._central_display.current_page == "album_art"
+
+
+def test_audio_track_menu_populates(qtbot, tmp_path) -> None:
+    window, _backend = _integration_window(qtbot, tmp_path)
+    window._populate_audio_menu()
+    labels = [a.text() for a in window._audio_menu.actions()]
+    assert labels == ["Track 1"]
+    window._central_display.spectrum._stop_thread()
+

@@ -1,0 +1,32 @@
+[project]
+name = "desktop-music"
+version = "0.1.0"
+description = "A PotPlayer-style desktop media player built with PyQt6 and libVLC"
+readme = "README.md"
+authors = [
+    { name = "Chiduk,Hwang", email = "chiduk.hwang@windriver.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "mutagen>=1.48.1",
+    "numpy>=2.5.3",
+    "pyqt6>=6.11.0",
+    "python-vlc>=3.0.21203",
+]
+
+[project.scripts]
+desktop-music = "desktop_music:main"
+
+[build-system]
+requires = ["uv_build>=0.12.4,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-qt>=4.5.0",
+]
