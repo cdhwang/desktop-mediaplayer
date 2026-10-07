@@ -23,6 +23,9 @@ PathRole = Qt.ItemDataRole.UserRole + 1
 TitleRole = Qt.ItemDataRole.UserRole + 2
 ArtistRole = Qt.ItemDataRole.UserRole + 3
 DurationRole = Qt.ItemDataRole.UserRole + 4
+# True when this row is the track currently loaded/playing. Distinct from
+# Qt's selection/current (focus) state so the delegate can draw a separate cue.
+PlayingRole = Qt.ItemDataRole.UserRole + 5
 
 
 @dataclass
@@ -77,6 +80,8 @@ class PlaylistModel(QAbstractListModel):
             return track.artist
         if role == DurationRole:
             return track.duration_ms
+        if role == PlayingRole:
+            return index.row() == self._current
         return None
 
     # -- track access ------------------------------------------------------
@@ -104,7 +109,14 @@ class PlaylistModel(QAbstractListModel):
         else:
             new = max(0, min(row, len(self._tracks) - 1))
         if new != self._current:
+            old = self._current
             self._current = new
+            # Repaint the rows whose "now playing" cue changed so the delegate
+            # updates without touching selection/focus state.
+            for r in (old, new):
+                if 0 <= r < len(self._tracks):
+                    idx = self.index(r, 0)
+                    self.dataChanged.emit(idx, idx, [PlayingRole])
             self.current_changed.emit(self._current)
 
     # -- mutation ----------------------------------------------------------
@@ -121,22 +133,47 @@ class PlaylistModel(QAbstractListModel):
         return 1
 
     def add_paths(self, paths: list[str]) -> int:
-        """Add multiple files and/or directories (recursively). Returns count."""
+        """Add multiple files and/or directories (recursively) at the end.
+
+        Returns the number of tracks added.
+        """
+        return self.insert_paths(len(self._tracks), paths)
+
+    def insert_paths(self, row: int, paths: list[str]) -> int:
+        """Insert files and/or directories (recursively) *before* ``row``.
+
+        ``row`` is a source row in ``[0, rowCount]``; it is clamped to that
+        range (``rowCount`` appends at the end). Returns the number of tracks
+        inserted. The current (now-playing) index is shifted so it keeps
+        pointing at the same track.
+        """
+        collected = self._collect_paths(paths)
+        if not collected:
+            return 0
+        row = max(0, min(row, len(self._tracks)))
+        count = len(collected)
+        self.beginInsertRows(QModelIndex(), row, row + count - 1)
+        self._tracks[row:row] = [Track(path=p) for p in collected]
+        self.endInsertRows()
+        if self._current == -1:
+            self.set_current(0)
+        elif row <= self._current:
+            # tracks were inserted at or before the playing row: keep the
+            # same track current by shifting the cursor.
+            self._current += count
+            self.current_changed.emit(self._current)
+        return count
+
+    @staticmethod
+    def _collect_paths(paths: list[str]) -> list[str]:
+        """Expand directories and filter to supported media files."""
         collected: list[str] = []
         for p in paths:
             if os.path.isdir(p):
                 collected.extend(_scan_dir(p))
             elif is_media(p):
                 collected.append(p)
-        if not collected:
-            return 0
-        start = len(self._tracks)
-        self.beginInsertRows(QModelIndex(), start, start + len(collected) - 1)
-        self._tracks.extend(Track(path=p) for p in collected)
-        self.endInsertRows()
-        if self._current == -1:
-            self.set_current(0)
-        return len(collected)
+        return collected
 
     def remove_row(self, row: int) -> None:
         if not (0 <= row < len(self._tracks)):

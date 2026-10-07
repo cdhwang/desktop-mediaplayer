@@ -54,6 +54,42 @@ def test_remove_row_adjusts_current() -> None:
     assert m.rowCount() == 2
 
 
+def test_insert_paths_at_position() -> None:
+    m = PlaylistModel()
+    m.add_paths(["/a.mp3", "/b.mp3", "/c.mp3"])
+    m.insert_paths(1, ["/x.mp3", "/y.mp3"])
+    paths = [m.data(m.index(i, 0), PathRole) for i in range(m.rowCount())]
+    assert paths == ["/a.mp3", "/x.mp3", "/y.mp3", "/b.mp3", "/c.mp3"]
+
+
+def test_insert_paths_clamps_and_appends() -> None:
+    m = PlaylistModel()
+    m.add_paths(["/a.mp3", "/b.mp3"])
+    # row past the end appends; add_paths delegates to insert_paths(end)
+    m.insert_paths(99, ["/z.mp3"])
+    paths = [m.data(m.index(i, 0), PathRole) for i in range(m.rowCount())]
+    assert paths == ["/a.mp3", "/b.mp3", "/z.mp3"]
+
+
+def test_insert_paths_shifts_current() -> None:
+    m = PlaylistModel()
+    m.add_paths(["/a.mp3", "/b.mp3", "/c.mp3"])
+    m.set_current(1)  # playing /b.mp3
+    m.insert_paths(0, ["/x.mp3"])  # insert before the playing row
+    # cursor shifts so it keeps pointing at /b.mp3
+    assert m.current_index == 2
+    assert m.data(m.index(m.current_index, 0), PathRole) == "/b.mp3"
+
+
+def test_insert_paths_after_current_keeps_cursor() -> None:
+    m = PlaylistModel()
+    m.add_paths(["/a.mp3", "/b.mp3", "/c.mp3"])
+    m.set_current(1)
+    m.insert_paths(2, ["/x.mp3"])  # insert after the playing row
+    assert m.current_index == 1
+    assert m.data(m.index(m.current_index, 0), PathRole) == "/b.mp3"
+
+
 def test_clear_resets() -> None:
     m = PlaylistModel()
     m.add_paths(["/a.mp3", "/b.mp3"])
@@ -201,3 +237,54 @@ def test_scan_dir_flat_missing_directory() -> None:
     from desktop_music.core.playlist import scan_dir_flat
 
     assert scan_dir_flat("/no/such/dir/hopefully") == []
+
+
+# -- distinct cues: playing / selection / focus ---------------------------
+
+
+def test_playing_role_tracks_current_index() -> None:
+    """PlayingRole marks only the current (now-playing) row."""
+    from desktop_music.core.playlist import PlayingRole
+
+    model = PlaylistModel()
+    model.add_paths(["/a.mp3", "/b.mp3", "/c.mp3"])
+    model.set_current(1)
+
+    assert model.data(model.index(0, 0), PlayingRole) is False
+    assert model.data(model.index(1, 0), PlayingRole) is True
+    assert model.data(model.index(2, 0), PlayingRole) is False
+
+
+def test_set_current_emits_data_changed_for_playing_cue(qtbot) -> None:
+    """Changing current repaints old and new rows via dataChanged(PlayingRole)."""
+    from desktop_music.core.playlist import PlayingRole
+
+    model = PlaylistModel()
+    model.add_paths(["/a.mp3", "/b.mp3", "/c.mp3"])
+    model.set_current(0)
+
+    changed_rows: list[int] = []
+    model.dataChanged.connect(
+        lambda tl, br, roles: changed_rows.append(tl.row())
+        if PlayingRole in roles else None
+    )
+    model.set_current(2)
+
+    # both the previously-playing row (0) and the new one (2) are repainted
+    assert set(changed_rows) == {0, 2}
+
+
+def test_highlight_current_does_not_change_selection(qtbot) -> None:
+    """The now-playing row is independent of the user's selection/focus."""
+    model = PlaylistModel()
+    model.add_paths(["/a.mp3", "/b.mp3", "/c.mp3"])
+    panel = PlaylistPanel(model)
+    qtbot.addWidget(panel)
+
+    # user selects/focuses row 0
+    panel.view.setCurrentIndex(panel.proxy.index(0, 0))
+    assert panel.view.currentIndex().row() == 0
+
+    # playback moves to row 2 -> selection/focus must stay on row 0
+    panel.highlight_current(2)
+    assert panel.view.currentIndex().row() == 0

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import MagicMock
 
 from PyQt6.QtCore import QMimeData, QUrl
@@ -72,7 +73,8 @@ def test_playlist_panel_accepts_drops(qtbot, tmp_path) -> None:
     flac.write_bytes(b"")
     with qtbot.waitSignal(panel.paths_dropped) as blocker:
         _simulate_drop(panel, _mime([str(flac)]))
-    assert blocker.args == [[str(flac)]]
+    # empty list -> append position (-1)
+    assert blocker.args == [[str(flac)], -1]
 
 
 def _simulate_drop(widget, mime) -> None:
@@ -91,6 +93,22 @@ def test_window_drop_on_playlist_adds(qtbot, tmp_path) -> None:
     a.write_bytes(b"")
     window._on_paths_dropped_add([str(a)])
     assert window.playlist.rowCount() == 1
+    window._central_display.spectrum._stop_thread()
+
+
+def test_window_drop_on_playlist_inserts_at_row(qtbot, tmp_path) -> None:
+    from desktop_music.core.playlist import PathRole
+
+    window = _window(qtbot, tmp_path)
+    for name in ("a.mp3", "b.mp3", "c.mp3"):
+        (tmp_path / name).write_bytes(b"")
+    window.playlist.add_paths([str(tmp_path / n) for n in ("a.mp3", "b.mp3", "c.mp3")])
+    x = tmp_path / "x.mp3"
+    x.write_bytes(b"")
+    window._on_paths_dropped_add([str(x)], 1)  # insert before row 1
+    m = window.playlist
+    names = [os.path.basename(m.data(m.index(i, 0), PathRole)) for i in range(m.rowCount())]
+    assert names == ["a.mp3", "x.mp3", "b.mp3", "c.mp3"]
     window._central_display.spectrum._stop_thread()
 
 

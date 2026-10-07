@@ -14,6 +14,7 @@ Row indices emitted outward are always *source* rows (filter-independent).
 from __future__ import annotations
 
 from PyQt6.QtCore import QModelIndex, QRect, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -27,31 +28,80 @@ from PyQt6.QtWidgets import (
 )
 
 from desktop_music.core.formatting import format_ms
-from desktop_music.core.playlist import DurationRole, PlaylistModel, TitleRole
+from desktop_music.core.playlist import (
+    DurationRole,
+    PlayingRole,
+    PlaylistModel,
+    TitleRole,
+)
 from desktop_music.core.playlist_filter import PlaylistFilterProxy
 from desktop_music.ui.dnd import extract_paths, has_media_urls
 
+# Cue colors (kept in sync with the dark theme palette).
+_PLAYING_ACCENT = QColor("#e0c040")   # now-playing text + marker (yellow)
+_FOCUS_BORDER = QColor("#e0c040")     # keyboard-focus outline
+_PLAYING_BAR = QColor("#e0c040")      # left edge bar on the playing row
+
 
 class _TrackDelegate(QStyledItemDelegate):
-    """Draws ``NN.  title`` on the left and duration right-aligned."""
+    """Draws each track row with three *distinct* visual cues:
+
+    * **now playing** — an accent-colored left bar, a ``\u25b6`` marker and
+      accent-colored text (driven by the model's :data:`PlayingRole`).
+    * **selected** — the palette highlight background (user selection).
+    * **keyboard focus** — a dashed accent outline around the current item.
+
+    These are independent: a row can be selected without being the playing
+    row, focused without being selected, and so on.
+    """
+
+    _MARKER_W = 16  # px reserved for the ``\u25b6`` now-playing marker
 
     def paint(self, painter, option, index) -> None:
         self.initStyleOption(option, index)
         painter.save()
 
-        if option.state & option.state.__class__.State_Selected:
+        state = option.state
+        is_selected = bool(state & state.__class__.State_Selected)
+        is_focused = bool(state & state.__class__.State_HasFocus)
+        is_playing = bool(index.data(PlayingRole))
+
+        # 1) Background: selection takes the highlight fill.
+        if is_selected:
             painter.fillRect(option.rect, option.palette.highlight())
+
+        rect: QRect = option.rect
+
+        # 2) Now-playing cue: left accent bar + marker + accent text color.
+        if is_playing:
+            bar = QRect(rect.left(), rect.top(), 3, rect.height())
+            painter.fillRect(bar, _PLAYING_BAR)
+            marker_rect = rect.adjusted(6, 0, 0, 0)
+            painter.setPen(_PLAYING_ACCENT)
+            painter.drawText(
+                marker_rect,
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                "\u25b6",
+            )
+
+        # 3) Text color: playing -> accent, selected -> highlighted text,
+        #    otherwise normal text.
+        if is_playing:
+            painter.setPen(_PLAYING_ACCENT)
+        elif is_selected:
             painter.setPen(option.palette.highlightedText().color())
         else:
             painter.setPen(option.palette.text().color())
 
-        rect: QRect = option.rect
         row = index.row() + 1
         title = index.data(Qt.ItemDataRole.DisplayRole) or ""
         duration_ms = index.data(DurationRole) or 0
         duration = format_ms(duration_ms) if duration_ms else ""
 
-        left = rect.adjusted(8, 0, -70, 0)
+        # Reserve space for the marker on the playing row so text does not
+        # shift relative to other rows.
+        left_pad = 8 + self._MARKER_W if is_playing else 8
+        left = rect.adjusted(left_pad, 0, -70, 0)
         painter.drawText(
             left,
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
@@ -64,6 +114,17 @@ class _TrackDelegate(QStyledItemDelegate):
                 Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                 duration,
             )
+
+        # 4) Keyboard-focus cue: dashed accent outline, drawn last so it sits
+        #    on top of any background/selection fill.
+        if is_focused:
+            pen = QPen(_FOCUS_BORDER)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            pen.setWidth(1)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(rect.adjusted(0, 0, -1, -1))
+
         painter.restore()
 
     def sizeHint(self, option, index):
@@ -91,7 +152,7 @@ class PlaylistPanel(QWidget):
     track_activated = pyqtSignal(int)  # SOURCE row
     add_files_requested = pyqtSignal()
     add_folder_requested = pyqtSignal()
-    paths_dropped = pyqtSignal(list)   # media files/folders dropped on the panel
+    paths_dropped = pyqtSignal(list, int)   # (media files/folders, insert source row; -1 = append)
 
     def __init__(self, model: PlaylistModel, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -192,21 +253,52 @@ class PlaylistPanel(QWidget):
     def dropEvent(self, event) -> None:  # noqa: N802 (Qt override)
         paths = extract_paths(event.mimeData())
         if paths:
-            self.paths_dropped.emit(paths)
+            self.paths_dropped.emit(paths, self._drop_source_row(event))
             event.acceptProposedAction()
         else:
             event.ignore()
 
+    def _drop_source_row(self, event) -> int:
+        """Source row at which dropped items should be inserted.
+
+        Maps the drop position to a view row, then to a source row. Dropping
+        on the lower half of a row inserts *after* it. Returns ``-1`` to mean
+        "append" — used when the drop lands past the last item or while a
+        search filter is active (positional insert is ambiguous when the
+        visible list is a filtered subset).
+        """
+        if self._model.rowCount() == 0:
+            return -1  # empty list -> append
+        if self._proxy.rowCount() != self._model.rowCount():
+            return -1  # a filter is active -> fall back to append
+        pos = event.position().toPoint()
+        index = self._view.indexAt(pos)
+        if not index.isValid():
+            return -1  # dropped on empty space -> append
+        proxy_row = index.row()
+        rect = self._view.visualRect(index)
+        if pos.y() > rect.center().y():
+            proxy_row += 1  # lower half -> insert after this row
+        src = self._proxy.to_source_row(proxy_row)
+        if src < 0:
+            # proxy_row is past the last mapped row (append position)
+            return self._model.rowCount()
+        return src
+
     def highlight_current(self, row: int) -> None:
+        """React to the now-playing row changing.
+
+        The "now playing" cue is painted by the delegate from the model's
+        :data:`PlayingRole`, so this does **not** touch the view's selection
+        or current (focus) index — those stay under the user's control. We
+        only scroll the playing row into view for convenience.
+        """
         if row < 0:
-            self._view.clearSelection()
             return
         proxy_row = self._proxy.from_source_row(row)
         if proxy_row < 0:
-            self._view.clearSelection()
             return
         index = self._proxy.index(proxy_row, 0)
-        self._view.setCurrentIndex(index)
         self._view.scrollTo(index)
 
     # -- toolbar actions ---------------------------------------------------

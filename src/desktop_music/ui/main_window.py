@@ -358,9 +358,16 @@ class MainWindow(QMainWindow):
 
     # -- drag & drop -------------------------------------------------------
 
-    def _on_paths_dropped_add(self, paths: list) -> None:
-        """Files/folders dropped on the playlist: append without interrupting."""
-        self._playlist.add_paths(list(paths))
+    def _on_paths_dropped_add(self, paths: list, row: int = -1) -> None:
+        """Files/folders dropped on the playlist: insert at the drop position.
+
+        ``row`` is the source row to insert before; ``-1`` appends at the end.
+        Playback is not interrupted.
+        """
+        if row < 0:
+            self._playlist.add_paths(list(paths))
+        else:
+            self._playlist.insert_paths(row, list(paths))
 
     def _on_paths_dropped_play(self, paths: list) -> None:
         """Files/folders dropped on the playback area: append and play the first."""

@@ -171,6 +171,9 @@ QListView#playlistView {{
     border: 1px solid {_BORDER};
     outline: 0;
 }}
+/* Selection fill (also drawn by the delegate's palette highlight). The
+   now-playing and keyboard-focus cues are drawn by _TrackDelegate so they
+   stay visually distinct from this selection background. */
 QListView::item:selected {{
     background-color: {_SELECT};
 }}
