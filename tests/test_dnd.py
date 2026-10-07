@@ -84,6 +84,99 @@ def _simulate_drop(widget, mime) -> None:
     widget.dropEvent(event)
 
 
+# -- view-level external drop indicator ------------------------------------
+
+
+def _drop_event_on_view(mime, point):
+    """A fake QDropEvent-like object with mimeData/position/source."""
+    from PyQt6.QtCore import QPoint, QPointF
+
+    event = MagicMock()
+    event.mimeData.return_value = mime
+    event.source.return_value = None  # external (not the view itself)
+    pos = point if isinstance(point, QPoint) else QPoint(*point)
+    event.position.return_value = QPointF(pos)
+    return event
+
+
+def test_view_external_drop_emits_insert_row(qtbot, tmp_path) -> None:
+    model = PlaylistModel()
+    model.add_paths([f"/song{i}.mp3" for i in range(5)])
+    panel = PlaylistPanel(model)
+    qtbot.addWidget(panel)
+    panel.resize(300, 400)
+    panel.show()
+    qtbot.waitExposed(panel)
+
+    view = panel.view
+    # Drop near the top of row 2 -> insert before row 2.
+    rect = view.visualRect(view.model().index(2, 0))
+    point = rect.topLeft() + rect.center() - rect.center()  # == topLeft
+    point.setY(rect.top() + 1)
+    point.setX(rect.center().x())
+
+    mp3 = tmp_path / "new.mp3"
+    mp3.write_bytes(b"")
+    with qtbot.waitSignal(panel.paths_dropped) as blocker:
+        view.dropEvent(_drop_event_on_view(_mime([str(mp3)]), point))
+    # proxy row 2 maps 1:1 to source row 2 (no filter active)
+    assert blocker.args == [[str(mp3)], 2]
+
+
+def test_view_external_drop_line_shown_on_drag_move(qtbot, tmp_path) -> None:
+    from PyQt6.QtCore import QPoint, QPointF
+
+    model = PlaylistModel()
+    model.add_paths([f"/song{i}.mp3" for i in range(5)])
+    panel = PlaylistPanel(model)
+    qtbot.addWidget(panel)
+    panel.resize(300, 400)
+    panel.show()
+    qtbot.waitExposed(panel)
+
+    view = panel.view
+    assert view._external_drop_y is None
+
+    mp3 = tmp_path / "new.mp3"
+    mp3.write_bytes(b"")
+    rect = view.visualRect(view.model().index(1, 0))
+    point = QPoint(rect.center().x(), rect.top() + 1)
+
+    move = MagicMock()
+    move.mimeData.return_value = _mime([str(mp3)])
+    move.source.return_value = None
+    move.position.return_value = QPointF(point)
+    view.dragMoveEvent(move)
+    assert view._external_drop_y is not None
+
+    # Leaving clears the indicator line.
+    from PyQt6.QtGui import QDragLeaveEvent
+
+    view.dragLeaveEvent(QDragLeaveEvent())
+    assert view._external_drop_y is None
+
+
+def test_view_external_drop_appends_past_last_row(qtbot, tmp_path) -> None:
+    from PyQt6.QtCore import QPoint
+
+    model = PlaylistModel()
+    model.add_paths(["/a.mp3", "/b.mp3"])
+    panel = PlaylistPanel(model)
+    qtbot.addWidget(panel)
+    panel.resize(300, 400)
+    panel.show()
+    qtbot.waitExposed(panel)
+
+    view = panel.view
+    mp3 = tmp_path / "c.mp3"
+    mp3.write_bytes(b"")
+    # Drop well below the last row -> append (source row == rowCount).
+    point = QPoint(10, view.viewport().height() - 2)
+    with qtbot.waitSignal(panel.paths_dropped) as blocker:
+        view.dropEvent(_drop_event_on_view(_mime([str(mp3)]), point))
+    assert blocker.args == [[str(mp3)], model.rowCount()]
+
+
 # -- window handlers -------------------------------------------------------
 
 

@@ -14,7 +14,7 @@ Row indices emitted outward are always *source* rows (filter-independent).
 from __future__ import annotations
 
 from PyQt6.QtCore import QMimeData, QModelIndex, QRect, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QDrag, QFontMetrics, QPen, QPixmap
+from PyQt6.QtGui import QColor, QDrag, QFontMetrics, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -162,13 +162,20 @@ class _PlaylistView(QListView):
 
     delete_pressed = pyqtSignal()
     reorder_requested = pyqtSignal(int, int)  # (src source row, dst source row)
+    # external file/folder drop: (paths, insert proxy row; -1 = append)
+    external_paths_dropped = pyqtSignal(list, int)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
-        self.setDropIndicatorShown(False)  # live reorder shows the move directly
-        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDropIndicatorShown(False)  # we draw our own thin insertion line
+        # Use the generic DragDrop mode (not InternalMove): InternalMove makes
+        # QAbstractItemView drop *external* drags on the floor before our
+        # overrides can react/repaint, so on X11 the drag cursor and our
+        # insertion line never update. We handle both internal reordering and
+        # external file drops manually in the drag/drop overrides below.
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         # In ListMode the rubber-band selection rectangle competes with the
         # drag gesture when pressing on an item. Disable it so a press on a
@@ -178,6 +185,12 @@ class _PlaylistView(QListView):
         # row shifts live as the item is dragged past its neighbours, giving
         # the phone-style "items slide out of the way" reordering.
         self._drag_proxy_row: int = -1
+        # Y coordinate (in viewport space) at which to paint a thin insertion
+        # line while an *external* file/folder drag hovers over the list.
+        # ``None`` means no external drag is in progress. This replaces Qt's
+        # default drop indicator (a chunky box around the whole hovered row)
+        # with a slim line between rows so the drop target is unambiguous.
+        self._external_drop_y: int | None = None
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt override)
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
@@ -227,9 +240,22 @@ class _PlaylistView(QListView):
     def dragEnterEvent(self, event) -> None:  # noqa: N802 (Qt override)
         if event.source() is self and self._reorder_enabled():
             event.acceptProposedAction()
+        elif has_media_urls(event.mimeData()):
+            self._accept_external_drag(event)
         else:
-            # Let an external file drop bubble up to the panel.
             event.ignore()
+
+    def _accept_external_drag(self, event) -> None:
+        """Accept an external file/folder drag with a Copy action.
+
+        File managers propose Copy/Move/Link; forcing CopyAction and calling
+        setDropAction before accept makes X11 (and Windows) show the small
+        "copy/drop" cursor the instant the drag enters the list, instead of
+        leaving the big default/no-drop indicator up — matching PotPlayer.
+        """
+        event.setDropAction(Qt.DropAction.CopyAction)
+        event.accept()
+        self._update_external_drop_line(event.position().toPoint())
 
     def _target_proxy_row(self, pos) -> int:
         """Final resting proxy row for a drag hovering at ``pos``."""
@@ -247,7 +273,46 @@ class _PlaylistView(QListView):
             row -= 1
         return max(0, min(row, self.model().rowCount() - 1))
 
+    # -- external drop indicator ------------------------------------------
+
+    def _external_insert_row(self, pos) -> int:
+        """Proxy row before which an external drop at ``pos`` would insert."""
+        index = self.indexAt(pos)
+        if not index.isValid():
+            return self.model().rowCount()  # empty space -> append
+        row = index.row()
+        rect = self.visualRect(index)
+        if pos.y() > rect.center().y():
+            row += 1
+        return row
+
+    def _update_external_drop_line(self, pos) -> None:
+        """Compute and cache the Y of the thin insertion line for ``pos``."""
+        row = self._external_insert_row(pos)
+        count = self.model().rowCount()
+        if count == 0:
+            # No rows: draw the line just below the top of the viewport.
+            y = 1
+        elif row >= count:
+            # Append position: bottom edge of the last row.
+            last = self.visualRect(self.model().index(count - 1, 0))
+            y = last.bottom()
+        else:
+            top = self.visualRect(self.model().index(row, 0))
+            y = top.top()
+        if y != self._external_drop_y:
+            self._external_drop_y = y
+            self.viewport().update()
+
+    def _clear_external_drop_line(self) -> None:
+        if self._external_drop_y is not None:
+            self._external_drop_y = None
+            self.viewport().update()
+
     def dragMoveEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if has_media_urls(event.mimeData()) and event.source() is not self:
+            self._accept_external_drag(event)
+            return
         if event.source() is not self or not self._reorder_enabled():
             event.ignore()
             return
@@ -274,13 +339,46 @@ class _PlaylistView(QListView):
             self.selectionModel().SelectionFlag.ClearAndSelect,
         )
 
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        self._clear_external_drop_line()
+        super().dragLeaveEvent(event)
+
     def dropEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        # External file/folder drop: emit paths + the computed insert row and
+        # let the panel perform the actual insertion.
+        if has_media_urls(event.mimeData()) and event.source() is not self:
+            pos = event.position().toPoint()
+            row = self._external_insert_row(pos)
+            self._clear_external_drop_line()
+            paths = extract_paths(event.mimeData())
+            if paths:
+                self.external_paths_dropped.emit(paths, row)
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+            return
         # The reorder already happened incrementally during dragMoveEvent;
         # just accept so Qt does not run its default remove/insert handling.
         if event.source() is self and self._reorder_enabled():
             event.acceptProposedAction()
         else:
             event.ignore()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().paintEvent(event)
+        if self._external_drop_y is None:
+            return
+        painter = QPainter(self.viewport())
+        pen = QPen(_PLAYING_ACCENT)
+        pen.setWidth(2)
+        painter.setPen(pen)
+        y = self._external_drop_y
+        width = self.viewport().width()
+        painter.drawLine(2, y, width - 2, y)
+        # small end caps so the thin line reads as an insertion caret
+        painter.drawLine(2, y - 3, 2, y + 3)
+        painter.drawLine(width - 2, y - 3, width - 2, y + 3)
+        painter.end()
 
 
 class PlaylistPanel(QWidget):
@@ -337,6 +435,7 @@ class PlaylistPanel(QWidget):
         )
         self._view.delete_pressed.connect(self._remove_selected)
         self._view.reorder_requested.connect(self._reorder)
+        self._view.external_paths_dropped.connect(self._on_view_external_drop)
 
         # bottom toolbar: ADD / DEL / SORT + search toggle
         self._add_btn = self._tool_btn("ADD", self.add_files_requested)
@@ -393,37 +492,36 @@ class PlaylistPanel(QWidget):
             event.ignore()
 
     def dropEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        # Drops landing on the view itself are handled by _PlaylistView (which
+        # draws the thin insertion line and emits external_paths_dropped).
+        # This only fires for drops on the panel chrome (header/toolbar), so
+        # append there.
         paths = extract_paths(event.mimeData())
         if paths:
-            self.paths_dropped.emit(paths, self._drop_source_row(event))
+            self.paths_dropped.emit(paths, -1)
             event.acceptProposedAction()
         else:
             event.ignore()
 
-    def _drop_source_row(self, event) -> int:
-        """Source row at which dropped items should be inserted.
+    def _on_view_external_drop(self, paths: list, proxy_row: int) -> None:
+        """External files/folders dropped onto the list at ``proxy_row``."""
+        self.paths_dropped.emit(list(paths), self._proxy_row_to_source(proxy_row))
 
-        Maps the drop position to a view row, then to a source row. Dropping
-        on the lower half of a row inserts *after* it. Returns ``-1`` to mean
-        "append" — used when the drop lands past the last item or while a
-        search filter is active (positional insert is ambiguous when the
-        visible list is a filtered subset).
+    def _proxy_row_to_source(self, proxy_row: int) -> int:
+        """Map a proxy insertion row to a source row (``-1`` = append).
+
+        Returns ``-1`` when the list is empty, a search filter is active (a
+        positional insert into a filtered subset is ambiguous), or the drop
+        falls past the last visible row.
         """
         if self._model.rowCount() == 0:
-            return -1  # empty list -> append
+            return -1
         if self._proxy.rowCount() != self._model.rowCount():
-            return -1  # a filter is active -> fall back to append
-        pos = event.position().toPoint()
-        index = self._view.indexAt(pos)
-        if not index.isValid():
-            return -1  # dropped on empty space -> append
-        proxy_row = index.row()
-        rect = self._view.visualRect(index)
-        if pos.y() > rect.center().y():
-            proxy_row += 1  # lower half -> insert after this row
+            return -1  # filter active -> append
+        if proxy_row >= self._proxy.rowCount():
+            return self._model.rowCount()  # append position
         src = self._proxy.to_source_row(proxy_row)
         if src < 0:
-            # proxy_row is past the last mapped row (append position)
             return self._model.rowCount()
         return src
 
