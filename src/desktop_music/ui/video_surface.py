@@ -17,6 +17,8 @@ class VideoSurface(QWidget):
     """Native surface that hosts libVLC video output."""
 
     double_clicked = pyqtSignal()
+    # emitted on mouse-wheel: +1 per up notch, -1 per down notch
+    volume_step = pyqtSignal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -43,3 +45,11 @@ class VideoSurface(QWidget):
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 (Qt override)
         self.double_clicked.emit()
         super().mouseDoubleClickEvent(event)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        notches = event.angleDelta().y()
+        if notches:
+            self.volume_step.emit(1 if notches > 0 else -1)
+            event.accept()
+        else:
+            super().wheelEvent(event)

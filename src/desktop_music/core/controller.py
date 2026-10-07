@@ -19,6 +19,8 @@ from desktop_music.services.backend import PlaybackState, VLCBackend
 
 # How far a single seek command jumps, in milliseconds.
 SEEK_STEP_MS = 5_000
+# How far a "long" seek command jumps (Shift+arrow), in milliseconds.
+SEEK_STEP_LONG_MS = 60_000
 # Volume increment for volume up/down commands.
 VOLUME_STEP = 5
 # Playback rate step and bounds.
@@ -201,6 +203,8 @@ class PlayerController(QObject):
             cmd.PREVIOUS: self.previous,
             cmd.SEEK_FORWARD: lambda: self.seek_relative(SEEK_STEP_MS),
             cmd.SEEK_BACKWARD: lambda: self.seek_relative(-SEEK_STEP_MS),
+            cmd.SEEK_FORWARD_LONG: lambda: self.seek_relative(SEEK_STEP_LONG_MS),
+            cmd.SEEK_BACKWARD_LONG: lambda: self.seek_relative(-SEEK_STEP_LONG_MS),
             cmd.VOLUME_UP: lambda: self.change_volume(VOLUME_STEP),
             cmd.VOLUME_DOWN: lambda: self.change_volume(-VOLUME_STEP),
             cmd.MUTE: self.toggle_mute,

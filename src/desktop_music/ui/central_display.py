@@ -31,6 +31,10 @@ class CentralDisplay(WindowDragMixin, QStackedWidget):
     # emitted when media files/folders are dropped onto the playback area
     paths_dropped = pyqtSignal(list)
 
+    # emitted on mouse-wheel over the playback area: +1 per up notch,
+    # -1 per down notch (callers scale this into a volume delta)
+    volume_step = pyqtSignal(int)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._pages: dict[str, QWidget] = {}
@@ -58,6 +62,9 @@ class CentralDisplay(WindowDragMixin, QStackedWidget):
 
         self.video = VideoSurface()
         self.add_page(PAGE_VIDEO, self.video)
+        # The video page can promote to a native window that consumes its own
+        # wheel events, so forward its volume steps through our own signal.
+        self.video.volume_step.connect(self.volume_step)
 
         self.show_page(PAGE_ALBUM_ART)
 
@@ -83,6 +90,17 @@ class CentralDisplay(WindowDragMixin, QStackedWidget):
 
     def has_page(self, name: str) -> bool:
         return name in self._pages
+
+    # -- wheel: volume up/down --------------------------------------------
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        notches = event.angleDelta().y()
+        if notches:
+            # One wheel notch is 120 units; scroll up => louder, down => quieter.
+            self.volume_step.emit(1 if notches > 0 else -1)
+            event.accept()
+        else:
+            super().wheelEvent(event)
 
     # -- drag & drop -------------------------------------------------------
 

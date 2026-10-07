@@ -28,6 +28,8 @@ NEXT = "next"
 PREVIOUS = "previous"
 SEEK_FORWARD = "seek_forward"
 SEEK_BACKWARD = "seek_backward"
+SEEK_FORWARD_LONG = "seek_forward_long"
+SEEK_BACKWARD_LONG = "seek_backward_long"
 VOLUME_UP = "volume_up"
 VOLUME_DOWN = "volume_down"
 MUTE = "mute"
@@ -49,6 +51,8 @@ COMMANDS: tuple[Command, ...] = (
     Command(PREVIOUS, "Previous Track", "Ctrl+Left"),
     Command(SEEK_FORWARD, "Seek Forward", "Right"),
     Command(SEEK_BACKWARD, "Seek Backward", "Left"),
+    Command(SEEK_FORWARD_LONG, "Seek Forward (1 min)", "Shift+Right"),
+    Command(SEEK_BACKWARD_LONG, "Seek Backward (1 min)", "Shift+Left"),
     Command(VOLUME_UP, "Volume Up", "Up"),
     Command(VOLUME_DOWN, "Volume Down", "Down"),
     Command(MUTE, "Mute / Unmute", "M"),

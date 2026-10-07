@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from desktop_music.constants import APP_NAME, MEDIA_EXTENSIONS, is_media
-from desktop_music.core.controller import PlayerController
+from desktop_music.core.controller import PlayerController, VOLUME_STEP
 from desktop_music.core.playlist import PlaylistModel, scan_dir_flat
 from desktop_music.core.shortcuts import ShortcutManager
 from desktop_music.services.backend import PlaybackState
@@ -306,6 +306,9 @@ class MainWindow(QMainWindow):
 
         self._central_display.video.double_clicked.connect(self.toggle_fullscreen)
         self._central_display.paths_dropped.connect(self._on_paths_dropped_play)
+        self._central_display.volume_step.connect(
+            lambda steps: ctrl.change_volume(steps * VOLUME_STEP)
+        )
         panel.paths_dropped.connect(self._on_paths_dropped_add)
 
         # initialize volume display from backend
