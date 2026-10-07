@@ -17,6 +17,7 @@ from desktop_music.ui.dnd import extract_paths, has_media_urls
 from desktop_music.ui.lyrics_view import LyricsView
 from desktop_music.ui.spectrum_widget import SpectrumWidget
 from desktop_music.ui.video_surface import VideoSurface
+from desktop_music.ui.window_drag import WindowDragMixin
 
 PAGE_ALBUM_ART = "album_art"
 PAGE_SPECTRUM = "spectrum"
@@ -24,7 +25,7 @@ PAGE_VIDEO = "video"
 PAGE_LYRICS = "lyrics"
 
 
-class CentralDisplay(QStackedWidget):
+class CentralDisplay(WindowDragMixin, QStackedWidget):
     """Switchable central content area."""
 
     # emitted when media files/folders are dropped onto the playback area
@@ -104,6 +105,29 @@ class CentralDisplay(QStackedWidget):
             event.acceptProposedAction()
         else:
             event.ignore()
+
+    # -- window drag -------------------------------------------------------
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        # The video page hosts a native surface that consumes its own mouse
+        # events, so dragging only applies to the album-art/spectrum/lyrics
+        # pages. Fullscreen/maximized windows are left alone by the mixin.
+        if self.start_window_drag(event):
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if self.continue_window_drag(event):
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if self.end_window_drag(event):
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     # -- convenience -------------------------------------------------------
 
