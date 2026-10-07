@@ -444,6 +444,22 @@ class MainWindow(QMainWindow):
         fallback = os.path.basename(path)
         from desktop_music.constants import is_audio, is_video
 
+        # For cue tracks several playlist entries share one backing file, so
+        # file-level tags are identical for all of them. Prefer the current
+        # playlist track's own title/artist (parsed from the cue sheet) so the
+        # now-playing display matches the playlist item and updates on every
+        # track change — even when the backing file didn't change.
+        current_track = self._playlist.current_track()
+        if current_track is not None and current_track.is_cue_track:
+            import dataclasses
+
+            meta = dataclasses.replace(
+                meta,
+                title=current_track.title or meta.title,
+                artist=current_track.artist or meta.artist,
+            )
+            fallback = current_track.display_title
+
         if is_video(path):
             # embed video output into the native surface and show it.
             # Promoting the surface to a native window and switching the

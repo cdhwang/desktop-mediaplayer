@@ -184,6 +184,51 @@ def test_metadata_does_not_overwrite_cue_segment_duration() -> None:
     assert t[2].title == "WHOLE"
 
 
+# -- now-playing display reflects the per-track cue title ------------------
+
+
+def test_now_playing_title_follows_cue_track(qtbot) -> None:
+    """Same backing file, different cue tracks -> distinct now-playing titles."""
+    from unittest.mock import patch
+
+    from desktop_music.core.playlist import Track
+    from desktop_music.services.metadata import Metadata
+    from desktop_music.ui.main_window import MainWindow
+
+    w = MainWindow()
+    qtbot.addWidget(w)
+    f = "/x/album.ape"
+    w._playlist._tracks = [
+        Track(path=f, title="Adagio", artist="C", start_ms=0, end_ms=2_000_000),
+        Track(path=f, title="Finale", artist="C", start_ms=2_000_000, end_ms=4_000_000),
+        Track(path=f, title="Applause", artist="C", start_ms=4_000_000, end_ms=0),
+    ]
+
+    shown: list[tuple[str, str]] = []
+    w._central_display.show_metadata = lambda meta, fallback_title="": shown.append(
+        (meta.title, meta.artist)
+    )
+    w._central_display.set_lyrics = lambda *a: None
+    w._central_display.spectrum.analyze = lambda *a: None
+    w._central_display.spectrum.start = lambda *a: None
+    w._central_display.spectrum.stop = lambda *a: None
+
+    # read_metadata returns the SAME shared file-level tags for every track
+    file_meta = Metadata(title="Whole Album", artist="Various", duration_ms=4_300_000)
+    with patch(
+        "desktop_music.ui.main_window.read_metadata", return_value=file_meta
+    ), patch("desktop_music.ui.main_window.read_lyrics", return_value=""):
+        for row in range(3):
+            w._playlist.set_current(row)
+            w._on_media_changed(f)
+
+    assert shown == [
+        ("Adagio", "C"),
+        ("Finale", "C"),
+        ("Applause", "C"),
+    ]
+
+
 def test_directory_scan_excludes_cue(tmp_path) -> None:
     _make_album(tmp_path)
     m = PlaylistModel()
