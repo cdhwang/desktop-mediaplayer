@@ -187,9 +187,14 @@ class ControlBar(QWidget):
     def set_position(self, position_ms: int, length_ms: int) -> None:
         """Update the seek slider and the combined time label."""
         self._length_ms = length_ms
-        self._time_lbl.setText(
-            f"{format_ms(position_ms)} / {format_ms(length_ms)}"
+        text = f"{format_ms(position_ms)} / {format_ms(length_ms)}"
+        # Pin the label width (digits widened to the broadest glyph) so the
+        # surrounding buttons don't shift as the time text changes.
+        template = "".join("8" if ch.isdigit() else ch for ch in text)
+        self._time_lbl.setFixedWidth(
+            self._time_lbl.fontMetrics().horizontalAdvance(template)
         )
+        self._time_lbl.setText(text)
         if not self._seeking:
             if length_ms > 0:
                 permille = int(1000 * position_ms / length_ms)

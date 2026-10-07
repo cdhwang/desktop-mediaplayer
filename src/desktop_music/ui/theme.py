@@ -127,11 +127,13 @@ QWidget#nowPlayingBar {{
 }}
 QLabel#bigTime {{
     color: {_TEXT};
+    font-family: monospace;
     font-size: 30px;
     font-weight: bold;
 }}
 QLabel#bigTimeTotal {{
     color: {_ACCENT};
+    font-family: monospace;
     font-size: 15px;
     font-weight: bold;
 }}

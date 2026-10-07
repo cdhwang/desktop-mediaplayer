@@ -145,8 +145,14 @@ class AlbumArtView(QWidget):
         # ---- now-playing overlay -------------------------------------
         self._elapsed = QLabel("00:00")
         self._elapsed.setObjectName("bigTime")
+        self._elapsed.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
         self._total = QLabel("00:00")
         self._total.setObjectName("bigTimeTotal")
+        self._total.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
 
         self._title = QLabel("")
         self._title.setObjectName("nowPlayingTitle")
@@ -208,8 +214,25 @@ class AlbumArtView(QWidget):
 
     def set_position(self, position_ms: int, length_ms: int) -> None:
         """Update the big elapsed / total time labels."""
-        self._elapsed.setText(format_ms(position_ms))
-        self._total.setText(format_ms(length_ms))
+        elapsed = format_ms(position_ms)
+        total = format_ms(length_ms)
+        self._apply_fixed_width(self._elapsed, elapsed)
+        self._apply_fixed_width(self._total, total)
+        self._elapsed.setText(elapsed)
+        self._total.setText(total)
+
+    @staticmethod
+    def _apply_fixed_width(label: QLabel, text: str) -> None:
+        """Pin *label* to the pixel width of *text* with all digits widened.
+
+        Prevents the right-aligned time labels from jittering as the digits
+        change (and as the format grows from ``m:ss`` to ``h:mm:ss``).
+        """
+        # Use the widest common digit so every value of the same format maps
+        # to an identical width.
+        template = "".join("8" if ch.isdigit() else ch for ch in text)
+        width = label.fontMetrics().horizontalAdvance(template)
+        label.setFixedWidth(width)
 
     @property
     def mini_spectrum(self) -> MiniSpectrum:
