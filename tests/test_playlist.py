@@ -98,6 +98,71 @@ def test_clear_resets() -> None:
     assert m.current_index == -1
 
 
+# -- reorder (drag to move) ------------------------------------------------
+
+
+def _paths(m: PlaylistModel) -> list[str]:
+    return [m.data(m.index(i, 0), PathRole) for i in range(m.rowCount())]
+
+
+def test_move_row_down() -> None:
+    m = PlaylistModel()
+    m.add_paths(["/a.mp3", "/b.mp3", "/c.mp3", "/d.mp3"])
+    assert m.move_row(0, 2) is True
+    assert _paths(m) == ["/b.mp3", "/c.mp3", "/a.mp3", "/d.mp3"]
+
+
+def test_move_row_up() -> None:
+    m = PlaylistModel()
+    m.add_paths(["/a.mp3", "/b.mp3", "/c.mp3", "/d.mp3"])
+    assert m.move_row(3, 1) is True
+    assert _paths(m) == ["/a.mp3", "/d.mp3", "/b.mp3", "/c.mp3"]
+
+
+def test_move_row_noop_and_bounds() -> None:
+    m = PlaylistModel()
+    m.add_paths(["/a.mp3", "/b.mp3"])
+    assert m.move_row(0, 0) is False
+    assert m.move_row(5, 0) is False  # src out of range
+    # dst clamps into range; moving last to beyond-end stays last-position move
+    assert m.move_row(0, 99) is True
+    assert _paths(m) == ["/b.mp3", "/a.mp3"]
+
+
+def test_move_row_tracks_current_when_moving_current() -> None:
+    m = PlaylistModel()
+    m.add_paths(["/a.mp3", "/b.mp3", "/c.mp3"])
+    m.set_current(0)  # playing /a.mp3
+    m.move_row(0, 2)
+    assert m.current_index == 2
+    assert m.data(m.index(m.current_index, 0), PathRole) == "/a.mp3"
+
+
+def test_move_row_shifts_current_when_moving_around_it() -> None:
+    m = PlaylistModel()
+    m.add_paths(["/a.mp3", "/b.mp3", "/c.mp3", "/d.mp3"])
+    m.set_current(2)  # playing /c.mp3
+    # move a row from before current to after current -> current shifts up
+    m.move_row(0, 3)
+    assert m.data(m.index(m.current_index, 0), PathRole) == "/c.mp3"
+
+    m2 = PlaylistModel()
+    m2.add_paths(["/a.mp3", "/b.mp3", "/c.mp3", "/d.mp3"])
+    m2.set_current(1)  # playing /b.mp3
+    # move a row from after current to before current -> current shifts down
+    m2.move_row(3, 0)
+    assert m2.data(m2.index(m2.current_index, 0), PathRole) == "/b.mp3"
+
+
+def test_panel_reorder_signal_moves_track(qtbot) -> None:
+    model = PlaylistModel()
+    model.add_paths(["/a.mp3", "/b.mp3", "/c.mp3"])
+    panel = PlaylistPanel(model)
+    qtbot.addWidget(panel)
+    panel.view.reorder_requested.emit(0, 2)
+    assert _paths(model) == ["/b.mp3", "/c.mp3", "/a.mp3"]
+
+
 # -- navigation ------------------------------------------------------------
 
 

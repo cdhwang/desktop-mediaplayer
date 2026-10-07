@@ -134,9 +134,26 @@ class _TrackDelegate(QStyledItemDelegate):
 
 
 class _PlaylistView(QListView):
-    """QListView that emits ``delete_pressed`` when Delete/Backspace is hit."""
+    """QListView with Delete-to-remove and drag-to-reorder support.
+
+    * emits ``delete_pressed`` when Delete/Backspace is hit.
+    * emits ``reorder_requested(src_source_row, dst_source_row)`` when the
+      user drags a row to a new position. Rows are *source* rows (filter
+      independent). Internal reordering is disabled while a search filter is
+      active, because a positional move within a filtered subset would be
+      ambiguous against the full list.
+    """
 
     delete_pressed = pyqtSignal()
+    reorder_requested = pyqtSignal(int, int)  # (src source row, dst source row)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt override)
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
@@ -144,6 +161,64 @@ class _PlaylistView(QListView):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def _reorder_enabled(self) -> bool:
+        """True when the proxy shows the full, unfiltered list 1:1."""
+        proxy = self.model()
+        source = proxy.sourceModel() if proxy is not None else None
+        if proxy is None or source is None:
+            return False
+        return proxy.rowCount() == source.rowCount()
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if event.source() is self and self._reorder_enabled():
+            event.acceptProposedAction()
+        else:
+            # Let an external file drop bubble up to the panel.
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if event.source() is self and self._reorder_enabled():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if event.source() is not self or not self._reorder_enabled():
+            event.ignore()
+            return
+        selected = self.selectionModel().selectedRows()
+        src_proxy = selected[0].row() if selected else self.currentIndex().row()
+        if src_proxy < 0:
+            event.ignore()
+            return
+
+        pos = event.position().toPoint()
+        index = self.indexAt(pos)
+        if index.isValid():
+            dst_proxy = index.row()
+            rect = self.visualRect(index)
+            if pos.y() > rect.center().y():
+                dst_proxy += 1
+        else:
+            dst_proxy = self.model().rowCount()  # dropped past the last row
+
+        # Translate "insert before dst_proxy" into a final resting index.
+        if dst_proxy > src_proxy:
+            dst_proxy -= 1
+        dst_proxy = max(0, min(dst_proxy, self.model().rowCount() - 1))
+        if dst_proxy == src_proxy:
+            event.ignore()
+            return
+
+        proxy = self.model()
+        src = proxy.mapToSource(proxy.index(src_proxy, 0)).row()
+        dst = proxy.mapToSource(proxy.index(dst_proxy, 0)).row()
+        if src < 0 or dst < 0:
+            event.ignore()
+            return
+        self.reorder_requested.emit(src, dst)
+        event.acceptProposedAction()
 
 
 class PlaylistPanel(QWidget):
@@ -195,6 +270,7 @@ class PlaylistPanel(QWidget):
             lambda index: self.track_activated.emit(self._proxy.to_source_row(index.row()))
         )
         self._view.delete_pressed.connect(self._remove_selected)
+        self._view.reorder_requested.connect(self._reorder)
 
         # bottom toolbar: ADD / DEL / SORT + search toggle
         self._add_btn = self._tool_btn("ADD", self.add_files_requested)
@@ -316,6 +392,10 @@ class PlaylistPanel(QWidget):
         model = self._model
         model._tracks.sort(key=lambda t: t.display_title.lower())
         model.layoutChanged.emit()
+
+    def _reorder(self, src: int, dst: int) -> None:
+        """Move a track from source row ``src`` to ``dst`` (final position)."""
+        self._model.move_row(src, dst)
 
     def _remove_selected(self) -> None:
         source_rows = sorted(

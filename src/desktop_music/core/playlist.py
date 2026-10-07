@@ -191,6 +191,45 @@ class PlaylistModel(QAbstractListModel):
             self._current = min(self._current, len(self._tracks) - 1)
             self.current_changed.emit(self._current)
 
+    def move_row(self, src: int, dst: int) -> bool:
+        """Move the track at ``src`` so it ends up at index ``dst``.
+
+        ``dst`` is interpreted as the final resting position in the list
+        (0..rowCount-1). The now-playing cursor is updated to keep pointing
+        at the same track. Returns True if a move happened.
+        """
+        n = len(self._tracks)
+        if n < 2:
+            return False
+        if not (0 <= src < n):
+            return False
+        dst = max(0, min(dst, n - 1))
+        if src == dst:
+            return False
+
+        # beginMoveRows expects the destination row in the *source* coordinate
+        # system (where the item would be inserted before). When moving down,
+        # that insertion point is one past the target index.
+        dest_for_qt = dst + 1 if dst > src else dst
+        if not self.beginMoveRows(QModelIndex(), src, src, QModelIndex(), dest_for_qt):
+            return False
+        track = self._tracks.pop(src)
+        self._tracks.insert(dst, track)
+        self.endMoveRows()
+
+        # Update the current cursor so it follows the same track.
+        cur = self._current
+        if cur == src:
+            cur = dst
+        elif src < cur <= dst:
+            cur -= 1
+        elif dst <= cur < src:
+            cur += 1
+        if cur != self._current:
+            self._current = cur
+            self.current_changed.emit(self._current)
+        return True
+
     def clear(self) -> None:
         self.beginResetModel()
         self._tracks.clear()
