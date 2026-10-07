@@ -323,14 +323,24 @@ class PlaylistModel(QAbstractListModel):
         track = self.track_at(row)
         if track is None:
             return
-        if title:
+        is_cue = track.is_cue_track
+        # Cue tracks carry their own per-track title/artist and a segment
+        # duration derived from the sheet. Don't let whole-file metadata
+        # (e.g. the full .ape length or album-level tags) overwrite them.
+        if title and not (is_cue and track.title):
             track.title = title
-        if artist:
+        if artist and not (is_cue and track.artist):
             track.artist = artist
         if album:
             track.extra["album"] = album
-        if duration_ms:
+        if duration_ms and not is_cue:
             track.duration_ms = duration_ms
+        elif duration_ms and is_cue and track.end_ms == 0 and track.duration_ms == 0:
+            # Last cue track of a file (plays to EOF): derive its length from
+            # the full-file duration minus this track's start offset.
+            remaining = duration_ms - track.start_ms
+            if remaining > 0:
+                track.duration_ms = remaining
         index = self.index(row, 0)
         self.dataChanged.emit(index, index)
 

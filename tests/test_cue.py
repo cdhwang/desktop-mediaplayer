@@ -148,6 +148,42 @@ def test_mmssff_conversion() -> None:
     assert _mmssff_to_ms(0, 0, 75) == 1_000  # 75 frames == 1 second
 
 
+# -- metadata must not overwrite cue segment durations/titles --------------
+
+
+def test_metadata_does_not_overwrite_cue_segment_duration() -> None:
+    from desktop_music.core.playlist import PlaylistModel, Track
+
+    file_len = 4_300_000
+    m = PlaylistModel()
+    m._tracks = [
+        Track(path="/x/a.ape", title="T1", artist="A",
+              start_ms=0, end_ms=2_000_000, duration_ms=2_000_000),
+        Track(path="/x/a.ape", title="T3", artist="A",
+              start_ms=4_000_000, end_ms=0, duration_ms=0),  # last -> EOF
+        Track(path="/x/plain.mp3"),
+    ]
+    m._current = 0
+
+    # Metadata extraction reports the WHOLE-file length and album-level tags.
+    for row in range(3):
+        m.update_track_metadata(
+            row, title="WHOLE", artist="VARIOUS", album="Alb",
+            duration_ms=file_len if row < 2 else 200_000,
+        )
+
+    t = m.tracks
+    # mid cue track keeps its segment duration + per-track title
+    assert t[0].duration_ms == 2_000_000
+    assert t[0].title == "T1"
+    # last cue track (end=0) derives length as file_len - start
+    assert t[1].duration_ms == file_len - 4_000_000
+    assert t[1].title == "T3"
+    # ordinary file is enriched normally
+    assert t[2].duration_ms == 200_000
+    assert t[2].title == "WHOLE"
+
+
 def test_directory_scan_excludes_cue(tmp_path) -> None:
     _make_album(tmp_path)
     m = PlaylistModel()
