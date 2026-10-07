@@ -8,9 +8,12 @@ small mini-spectrum on the right.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import QPointF, QRectF, Qt
+from PyQt6.QtGui import QColor, QPainter, QPixmap
 from PyQt6.QtWidgets import (
+    QGraphicsBlurEffect,
+    QGraphicsPixmapItem,
+    QGraphicsScene,
     QGridLayout,
     QLabel,
     QVBoxLayout,
@@ -20,6 +23,112 @@ from PyQt6.QtWidgets import (
 from desktop_music.core.formatting import format_ms
 from desktop_music.services.metadata import Metadata
 from desktop_music.ui.spectrum_widget import MiniSpectrum
+
+# How strongly to blur the background fill (PotPlayer uses a heavy blur).
+_BLUR_RADIUS = 40
+# Darken the blurred background so the foreground art stays prominent.
+_BG_DIM = 90  # alpha of the black overlay drawn on top of the blur (0-255)
+
+
+def _blur_pixmap(src: QPixmap, radius: int = _BLUR_RADIUS) -> QPixmap:
+    """Return a Gaussian-blurred copy of *src* via an offscreen scene."""
+    scene = QGraphicsScene()
+    item = QGraphicsPixmapItem(src)
+    effect = QGraphicsBlurEffect()
+    effect.setBlurRadius(radius)
+    item.setGraphicsEffect(effect)
+    scene.addItem(item)
+
+    result = QPixmap(src.size())
+    result.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(result)
+    # Render with a margin so edge pixels blur against real content, then
+    # the full rect is drawn into the result.
+    scene.render(painter, QRectF(result.rect()), QRectF(src.rect()))
+    painter.end()
+    return result
+
+
+class _ArtCanvas(QWidget):
+    """Draws cover art centered over a blurred, zoom-to-fill background.
+
+    Mirrors PotPlayer: the empty margins around aspect-fitted album art are
+    filled with a heavily blurred, zoomed copy of the same artwork.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("albumArt")
+        self.setMinimumSize(200, 200)
+        self._source: QPixmap | None = None
+        self._placeholder = "\u266a"
+        self._blur_cache: QPixmap | None = None
+        self._blur_cache_size = None
+
+    def set_pixmap(self, pixmap: QPixmap | None) -> None:
+        self._source = pixmap if pixmap and not pixmap.isNull() else None
+        self._blur_cache = None
+        self._blur_cache_size = None
+        self.update()
+
+    def has_pixmap(self) -> bool:
+        return self._source is not None
+
+    def _background(self) -> QPixmap | None:
+        """Blurred, zoom-to-fill background sized to the widget."""
+        if self._source is None:
+            return None
+        target = self.size()
+        if self._blur_cache is not None and self._blur_cache_size == (
+            target.width(),
+            target.height(),
+        ):
+            return self._blur_cache
+
+        # Scale the source to cover the whole widget (crop overflow), then blur.
+        filled = self._source.scaled(
+            target,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        # Center-crop to the exact widget size before blurring.
+        x = max(0, (filled.width() - target.width()) // 2)
+        y = max(0, (filled.height() - target.height()) // 2)
+        cropped = filled.copy(x, y, target.width(), target.height())
+        self._blur_cache = _blur_pixmap(cropped)
+        self._blur_cache_size = (target.width(), target.height())
+        return self._blur_cache
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        painter = QPainter(self)
+        rect = self.rect()
+        painter.fillRect(rect, QColor("#0b0b0e"))
+
+        if self._source is None:
+            painter.setPen(QColor("#3a3a44"))
+            font = painter.font()
+            font.setPixelSize(72)
+            painter.setFont(font)
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._placeholder)
+            painter.end()
+            return
+
+        # 1) blurred zoom-to-fill background.
+        bg = self._background()
+        if bg is not None:
+            painter.drawPixmap(0, 0, bg)
+            painter.fillRect(rect, QColor(0, 0, 0, _BG_DIM))
+
+        # 2) crisp, aspect-fitted foreground centered in the widget.
+        fg = self._source.scaled(
+            self.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        fx = (rect.width() - fg.width()) / 2
+        fy = (rect.height() - fg.height()) / 2
+        painter.drawPixmap(QPointF(fx, fy), fg)
+        painter.end()
 
 
 class AlbumArtView(QWidget):
@@ -31,10 +140,7 @@ class AlbumArtView(QWidget):
         self.clear()
 
     def _build_ui(self) -> None:
-        self._art = QLabel()
-        self._art.setObjectName("albumArt")
-        self._art.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._art.setMinimumSize(200, 200)
+        self._art = _ArtCanvas()
 
         # ---- now-playing overlay -------------------------------------
         self._elapsed = QLabel("00:00")
@@ -79,8 +185,7 @@ class AlbumArtView(QWidget):
     # -- public API --------------------------------------------------------
 
     def clear(self) -> None:
-        self._art.setPixmap(QPixmap())
-        self._art.setText("\u266a")
+        self._art.set_pixmap(None)
         self._title.setText("")
         self._tech.setText("")
         self._elapsed.setText("00:00")
@@ -97,10 +202,9 @@ class AlbumArtView(QWidget):
         if meta.cover_art:
             pixmap = QPixmap()
             if pixmap.loadFromData(meta.cover_art):
-                self._set_art(pixmap)
+                self._art.set_pixmap(pixmap)
                 return
-        self._art.setPixmap(QPixmap())
-        self._art.setText("\u266a")
+        self._art.set_pixmap(None)
 
     def set_position(self, position_ms: int, length_ms: int) -> None:
         """Update the big elapsed / total time labels."""
@@ -111,16 +215,6 @@ class AlbumArtView(QWidget):
     def mini_spectrum(self) -> MiniSpectrum:
         return self._mini
 
-    def _set_art(self, pixmap: QPixmap) -> None:
-        self._art.setText("")
-        scaled = pixmap.scaled(
-            self._art.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self._art.setPixmap(scaled)
-
     @property
     def has_art(self) -> bool:
-        pm = self._art.pixmap()
-        return pm is not None and not pm.isNull()
+        return self._art.has_pixmap()
