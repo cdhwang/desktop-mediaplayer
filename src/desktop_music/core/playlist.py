@@ -84,6 +84,18 @@ class PlaylistModel(QAbstractListModel):
             return index.row() == self._current
         return None
 
+    def flags(self, index: QModelIndex) -> Qt.ItemFlag:  # noqa: N802
+        """Expose drag/drop flags so the view can start reorder drags.
+
+        Valid rows are draggable; invalid (empty-space) indexes are drop
+        targets so an item can be dropped at the end of the list.
+        """
+        base = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        if index.isValid():
+            return base | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsDropEnabled
+        return base | Qt.ItemFlag.ItemIsDropEnabled
+
+
     # -- track access ------------------------------------------------------
 
     @property

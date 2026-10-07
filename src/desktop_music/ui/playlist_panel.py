@@ -154,6 +154,10 @@ class _PlaylistView(QListView):
         self.setDropIndicatorShown(True)
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        # In ListMode the rubber-band selection rectangle competes with the
+        # drag gesture when pressing on an item. Disable it so a press on a
+        # row starts a reorder drag rather than a selection sweep.
+        self.setSelectionRectVisible(False)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt override)
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):

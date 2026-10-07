@@ -163,6 +163,28 @@ def test_panel_reorder_signal_moves_track(qtbot) -> None:
     assert _paths(model) == ["/b.mp3", "/c.mp3", "/a.mp3"]
 
 
+def test_valid_row_is_drag_enabled() -> None:
+    from PyQt6.QtCore import Qt
+
+    m = PlaylistModel()
+    m.add_paths(["/a.mp3", "/b.mp3"])
+    flags = m.flags(m.index(0, 0))
+    assert flags & Qt.ItemFlag.ItemIsDragEnabled
+    assert flags & Qt.ItemFlag.ItemIsDropEnabled
+    assert flags & Qt.ItemFlag.ItemIsSelectable
+
+
+def test_proxy_preserves_drag_flags(qtbot) -> None:
+    from PyQt6.QtCore import Qt
+
+    model = PlaylistModel()
+    model.add_paths(["/a.mp3", "/b.mp3"])
+    panel = PlaylistPanel(model)
+    qtbot.addWidget(panel)
+    pidx = panel.proxy.index(0, 0)
+    assert panel.proxy.flags(pidx) & Qt.ItemFlag.ItemIsDragEnabled
+
+
 # -- navigation ------------------------------------------------------------
 
 
