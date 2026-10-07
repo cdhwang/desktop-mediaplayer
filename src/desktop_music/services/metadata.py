@@ -113,6 +113,14 @@ def _first_tag(audio, keys: tuple[str, ...]) -> str:
 
 
 def _extract_cover(path: str, audio) -> Optional[bytes]:
+    """Return cover art bytes: embedded first, else a sidecar image file."""
+    embedded = _extract_embedded_cover(audio)
+    if embedded is not None:
+        return embedded
+    return _extract_sidecar_cover(path)
+
+
+def _extract_embedded_cover(audio) -> Optional[bytes]:
     """Return embedded cover art bytes if present."""
     # FLAC stores pictures directly.
     if isinstance(audio, FLAC):
@@ -131,3 +139,55 @@ def _extract_cover(path: str, audio) -> Optional[bytes]:
             return bytes(apics[0].data)
 
     return None
+
+
+# Preferred sidecar image base names (lower-case), in priority order.
+_COVER_NAME_PRIORITY = ("cover", "front", "folder", "album", "albumart")
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp")
+
+
+def _extract_sidecar_cover(path: str) -> Optional[bytes]:
+    """Look for a cover image file next to *path*.
+
+    Preference order:
+    1. A file named like ``cover``/``front``/… (case-insensitive) with an
+       image extension.
+    2. If no such named file exists but the directory contains exactly one
+       image file, use that one.
+    """
+    import os
+
+    directory = os.path.dirname(path) or "."
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return None
+
+    images: list[str] = []
+    by_base: dict[str, str] = {}
+    for name in entries:
+        full = os.path.join(directory, name)
+        if not os.path.isfile(full):
+            continue
+        base, ext = os.path.splitext(name)
+        if ext.lower() not in _IMAGE_EXTS:
+            continue
+        images.append(full)
+        by_base.setdefault(base.lower(), full)
+
+    for preferred in _COVER_NAME_PRIORITY:
+        if preferred in by_base:
+            return _read_file_bytes(by_base[preferred])
+
+    if len(images) == 1:
+        return _read_file_bytes(images[0])
+
+    return None
+
+
+def _read_file_bytes(path: str) -> Optional[bytes]:
+    try:
+        with open(path, "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None

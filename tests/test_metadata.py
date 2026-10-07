@@ -120,6 +120,58 @@ def test_read_metadata_no_tags(tmp_path) -> None:
     assert meta.cover_art is None
 
 
+def test_sidecar_cover_named_front_case_insensitive(tmp_path) -> None:
+    path = tmp_path / "bare.wav"
+    _write_wav(path)
+    (tmp_path / "FRONT.png").write_bytes(_PNG_1x1)
+    meta = read_metadata(str(path))
+    assert meta.cover_art == _PNG_1x1
+
+
+def test_sidecar_cover_prefers_named_over_single(tmp_path) -> None:
+    path = tmp_path / "bare.wav"
+    _write_wav(path)
+    other = b"other-image-bytes"
+    (tmp_path / "random.jpg").write_bytes(other)
+    (tmp_path / "Cover.png").write_bytes(_PNG_1x1)
+    meta = read_metadata(str(path))
+    assert meta.cover_art == _PNG_1x1
+
+
+def test_sidecar_cover_single_image_fallback(tmp_path) -> None:
+    path = tmp_path / "bare.wav"
+    _write_wav(path)
+    data = b"only-one-image"
+    (tmp_path / "whatever.jpg").write_bytes(data)
+    meta = read_metadata(str(path))
+    assert meta.cover_art == data
+
+
+def test_sidecar_cover_multiple_unnamed_images_no_pick(tmp_path) -> None:
+    path = tmp_path / "bare.wav"
+    _write_wav(path)
+    (tmp_path / "one.jpg").write_bytes(b"a")
+    (tmp_path / "two.png").write_bytes(b"b")
+    meta = read_metadata(str(path))
+    assert meta.cover_art is None
+
+
+def test_embedded_cover_takes_precedence_over_sidecar(tmp_path) -> None:
+    path = tmp_path / "song.wav"
+    _write_wav(path)
+    from mutagen.wave import WAVE
+    from mutagen.id3 import APIC
+
+    audio = WAVE(str(path))
+    if audio.tags is None:
+        audio.add_tags()
+    audio.tags.add(APIC(encoding=3, mime="image/png", type=3, desc="", data=_PNG_1x1))
+    audio.save()
+    (tmp_path / "cover.png").write_bytes(b"sidecar-should-not-win")
+    meta = read_metadata(str(path))
+    assert meta.cover_art == _PNG_1x1
+
+
 def test_read_metadata_bad_file(tmp_path) -> None:
     path = tmp_path / "broken.mp3"
     path.write_bytes(b"not really audio")
