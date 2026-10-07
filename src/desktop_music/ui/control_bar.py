@@ -14,16 +14,67 @@ the main window wires it to the controller.
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
     QSlider,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
 
 from desktop_music.core.formatting import format_ms
+
+
+class ClickSeekSlider(QSlider):
+    """A horizontal slider that jumps to the exact click position.
+
+    The default ``QSlider`` only steps by a page increment when the user
+    clicks on the groove, so clicking somewhere on the bar does not move the
+    handle to that spot. This subclass maps the click position directly to a
+    slider value, which is what users expect from a media seek bar.
+    """
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setValue(self._value_at(event))
+            # Begin an interactive drag so sliderPressed/Released fire.
+            self.sliderPressed.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self.setValue(self._value_at(event))
+            self.sliderMoved.emit(self.value())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setValue(self._value_at(event))
+            self.sliderReleased.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def _value_at(self, event: QMouseEvent) -> int:
+        """Translate a mouse x position into a slider value."""
+        if self.orientation() == Qt.Orientation.Horizontal:
+            pos = int(event.position().x())
+            span = self.width()
+        else:
+            pos = self.height() - int(event.position().y())
+            span = self.height()
+        if span <= 0:
+            return self.minimum()
+        return QStyle.sliderValueFromPosition(
+            self.minimum(), self.maximum(), pos, span
+        )
 
 
 class ControlBar(QWidget):
@@ -54,7 +105,7 @@ class ControlBar(QWidget):
 
     def _build_ui(self) -> None:
         # ---- Row 1: seek slider + volume -------------------------------
-        self._seek_slider = QSlider(Qt.Orientation.Horizontal)
+        self._seek_slider = ClickSeekSlider(Qt.Orientation.Horizontal)
         self._seek_slider.setObjectName("seekSlider")
         self._seek_slider.setRange(0, 1000)  # per-mille of total length
         self._seek_slider.setFocusPolicy(Qt.FocusPolicy.NoFocus)

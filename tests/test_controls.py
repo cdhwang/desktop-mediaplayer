@@ -105,6 +105,45 @@ def test_control_bar_position_updates_labels(qtbot) -> None:
     assert bar._seek_slider.value() == 500  # halfway
 
 
+def test_seek_slider_click_jumps_to_position(qtbot) -> None:
+    from PyQt6.QtCore import QEvent, QPointF, Qt
+    from PyQt6.QtGui import QMouseEvent
+
+    bar = ControlBar()
+    qtbot.addWidget(bar)
+    bar.show()
+    qtbot.waitExposed(bar)
+
+    slider = bar._seek_slider
+    slider.setFixedWidth(1000)
+    slider.resize(1000, slider.height())
+
+    results: list[float] = []
+    bar.seek_requested.connect(results.append)
+
+    # Click near the right edge -> should seek near the end, not a tiny step.
+    x = 900
+    press = QMouseEvent(
+        QEvent.Type.MouseButtonPress,
+        QPointF(x, 5),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    release = QMouseEvent(
+        QEvent.Type.MouseButtonRelease,
+        QPointF(x, 5),
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    slider.mousePressEvent(press)
+    slider.mouseReleaseEvent(release)
+
+    assert results, "seek_requested was not emitted"
+    assert results[-1] > 0.8  # jumped near the clicked position
+
+
 def test_main_window_wires_control_bar(qtbot) -> None:
     backend = MagicMock()
     backend.get_state.return_value = PlaybackState.IDLE
