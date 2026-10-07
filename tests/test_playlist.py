@@ -163,6 +163,61 @@ def test_panel_reorder_signal_moves_track(qtbot) -> None:
     assert _paths(model) == ["/b.mp3", "/c.mp3", "/a.mp3"]
 
 
+def test_live_reorder_moves_item_while_dragging(qtbot) -> None:
+    """Dragging over a lower row reorders the list immediately (live)."""
+    from unittest.mock import MagicMock
+
+    from PyQt6.QtCore import QPointF
+
+    model = PlaylistModel()
+    model.add_paths(["/a.mp3", "/b.mp3", "/c.mp3"])
+    panel = PlaylistPanel(model)
+    qtbot.addWidget(panel)
+    view = panel.view
+    view.resize(300, 400)
+    view.show()
+    qtbot.waitExposed(view)
+
+    # Grab row 0 ("/a.mp3").
+    view._drag_proxy_row = 0
+
+    # Hover over the lower half of row 2 -> "/a.mp3" should slide to the end.
+    rect2 = view.visualRect(panel.proxy.index(2, 0))
+    pos = QPointF(float(rect2.center().x()), float(rect2.bottom() - 1))
+    event = MagicMock()
+    event.source.return_value = view
+    event.position.return_value = pos
+
+    view.dragMoveEvent(event)
+
+    assert _paths(model) == ["/b.mp3", "/c.mp3", "/a.mp3"]
+    # The dragged-row cursor tracks the item's new position.
+    assert view._drag_proxy_row == 2
+
+
+def test_live_reorder_disabled_while_filtering(qtbot) -> None:
+    """No live move happens when a search filter hides rows."""
+    from unittest.mock import MagicMock
+
+    from PyQt6.QtCore import QPointF
+
+    model = PlaylistModel()
+    model.add_paths(["/a.mp3", "/b.mp3", "/c.mp3"])
+    panel = PlaylistPanel(model)
+    qtbot.addWidget(panel)
+    panel.proxy.set_query("a")  # filter active -> reorder disabled
+    view = panel.view
+    view._drag_proxy_row = 0
+
+    event = MagicMock()
+    event.source.return_value = view
+    event.position.return_value = QPointF(10.0, 10.0)
+    view.dragMoveEvent(event)
+
+    # list order unchanged
+    assert _paths(model) == ["/a.mp3", "/b.mp3", "/c.mp3"]
+
+
 def test_valid_row_is_drag_enabled() -> None:
     from PyQt6.QtCore import Qt
 

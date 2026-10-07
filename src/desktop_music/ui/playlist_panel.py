@@ -13,8 +13,8 @@ Row indices emitted outward are always *source* rows (filter-independent).
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QModelIndex, QRect, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPen
+from PyQt6.QtCore import QMimeData, QModelIndex, QRect, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QDrag, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -151,13 +151,17 @@ class _PlaylistView(QListView):
         super().__init__(parent)
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
-        self.setDropIndicatorShown(True)
+        self.setDropIndicatorShown(False)  # live reorder shows the move directly
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         # In ListMode the rubber-band selection rectangle competes with the
         # drag gesture when pressing on an item. Disable it so a press on a
         # row starts a reorder drag rather than a selection sweep.
         self.setSelectionRectVisible(False)
+        # Proxy row of the item currently being dragged (-1 when idle). The
+        # row shifts live as the item is dragged past its neighbours, giving
+        # the phone-style "items slide out of the way" reordering.
+        self._drag_proxy_row: int = -1
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt override)
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
@@ -174,6 +178,36 @@ class _PlaylistView(QListView):
             return False
         return proxy.rowCount() == source.rowCount()
 
+    def startDrag(self, supported_actions) -> None:  # noqa: N802 (Qt override)
+        """Begin an internal reorder drag with no visible drag pixmap.
+
+        Live reordering already shows the item moving, so the default drag
+        image (a snapshot of the row that follows the cursor) is undesirable
+        here — it floats over and obscures the rows below. We run our own
+        ``QDrag`` with a transparent 1x1 pixmap instead.
+        """
+        if not self._reorder_enabled():
+            self._drag_proxy_row = -1
+            super().startDrag(supported_actions)
+            return
+        selected = self.selectionModel().selectedRows()
+        row = selected[0].row() if selected else self.currentIndex().row()
+        if row < 0:
+            self._drag_proxy_row = -1
+            return
+        self._drag_proxy_row = row
+
+        indexes = self.selectionModel().selectedIndexes()
+        mime = self.model().mimeData(indexes) if indexes else QMimeData()
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        blank = QPixmap(1, 1)
+        blank.fill(Qt.GlobalColor.transparent)
+        drag.setPixmap(blank)
+        drag.exec(supported_actions, Qt.DropAction.MoveAction)
+        # Drag finished (exec is synchronous): reset tracking state.
+        self._drag_proxy_row = -1
+
     def dragEnterEvent(self, event) -> None:  # noqa: N802 (Qt override)
         if event.source() is self and self._reorder_enabled():
             event.acceptProposedAction()
@@ -181,48 +215,56 @@ class _PlaylistView(QListView):
             # Let an external file drop bubble up to the panel.
             event.ignore()
 
+    def _target_proxy_row(self, pos) -> int:
+        """Final resting proxy row for a drag hovering at ``pos``."""
+        index = self.indexAt(pos)
+        if index.isValid():
+            row = index.row()
+            rect = self.visualRect(index)
+            if pos.y() > rect.center().y():
+                row += 1
+        else:
+            row = self.model().rowCount()  # past the last row -> end
+        # Convert an "insert before row" position into a resting index,
+        # accounting for the dragged item being removed from its old slot.
+        if row > self._drag_proxy_row:
+            row -= 1
+        return max(0, min(row, self.model().rowCount() - 1))
+
     def dragMoveEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        if event.source() is not self or not self._reorder_enabled():
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        if self._drag_proxy_row < 0:
+            return
+        target = self._target_proxy_row(event.position().toPoint())
+        if target == self._drag_proxy_row:
+            return
+        # Live move: shift the dragged item to the hovered slot immediately so
+        # the surrounding rows visibly slide out of the way.
+        proxy = self.model()
+        src = proxy.mapToSource(proxy.index(self._drag_proxy_row, 0)).row()
+        dst = proxy.mapToSource(proxy.index(target, 0)).row()
+        if src < 0 or dst < 0:
+            return
+        self.reorder_requested.emit(src, dst)
+        self._drag_proxy_row = target
+        # Keep selection/focus on the moving item so the highlight follows it.
+        new_index = proxy.index(target, 0)
+        self.setCurrentIndex(new_index)
+        self.selectionModel().select(
+            new_index,
+            self.selectionModel().SelectionFlag.ClearAndSelect,
+        )
+
+    def dropEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        # The reorder already happened incrementally during dragMoveEvent;
+        # just accept so Qt does not run its default remove/insert handling.
         if event.source() is self and self._reorder_enabled():
             event.acceptProposedAction()
         else:
             event.ignore()
-
-    def dropEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        if event.source() is not self or not self._reorder_enabled():
-            event.ignore()
-            return
-        selected = self.selectionModel().selectedRows()
-        src_proxy = selected[0].row() if selected else self.currentIndex().row()
-        if src_proxy < 0:
-            event.ignore()
-            return
-
-        pos = event.position().toPoint()
-        index = self.indexAt(pos)
-        if index.isValid():
-            dst_proxy = index.row()
-            rect = self.visualRect(index)
-            if pos.y() > rect.center().y():
-                dst_proxy += 1
-        else:
-            dst_proxy = self.model().rowCount()  # dropped past the last row
-
-        # Translate "insert before dst_proxy" into a final resting index.
-        if dst_proxy > src_proxy:
-            dst_proxy -= 1
-        dst_proxy = max(0, min(dst_proxy, self.model().rowCount() - 1))
-        if dst_proxy == src_proxy:
-            event.ignore()
-            return
-
-        proxy = self.model()
-        src = proxy.mapToSource(proxy.index(src_proxy, 0)).row()
-        dst = proxy.mapToSource(proxy.index(dst_proxy, 0)).row()
-        if src < 0 or dst < 0:
-            event.ignore()
-            return
-        self.reorder_requested.emit(src, dst)
-        event.acceptProposedAction()
 
 
 class PlaylistPanel(QWidget):
