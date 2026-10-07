@@ -184,11 +184,21 @@ class PlaylistModel(QAbstractListModel):
 
     @staticmethod
     def _collect_paths(paths: list[str]) -> list[str]:
-        """Expand directories and filter to supported media files."""
+        """Expand directories and filter to supported media files.
+
+        ``.cue`` sheets given directly are expanded into the media files they
+        reference (the cue file itself is never added). ``.cue`` files found
+        while scanning a directory are ignored — directory scans only collect
+        supported media extensions, which excludes ``.cue``.
+        """
+        from desktop_music.services.cue import is_cue, parse_cue_files
+
         collected: list[str] = []
         for p in paths:
             if os.path.isdir(p):
                 collected.extend(_scan_dir(p))
+            elif is_cue(p):
+                collected.extend(parse_cue_files(p))
             elif is_media(p):
                 collected.append(p)
         return collected

@@ -5,6 +5,12 @@ from __future__ import annotations
 import os
 
 from desktop_music.constants import MEDIA_EXTENSIONS, is_media
+from desktop_music.services.cue import is_cue
+
+
+def _is_droppable(path: str) -> bool:
+    """A local path we accept: a directory, a media file, or a cue sheet."""
+    return os.path.isdir(path) or is_media(path) or is_cue(path)
 
 
 def has_media_urls(mime) -> bool:
@@ -12,10 +18,8 @@ def has_media_urls(mime) -> bool:
     if not mime.hasUrls():
         return False
     for url in mime.urls():
-        if url.isLocalFile():
-            path = url.toLocalFile()
-            if os.path.isdir(path) or is_media(path):
-                return True
+        if url.isLocalFile() and _is_droppable(url.toLocalFile()):
+            return True
     return False
 
 
@@ -23,7 +27,8 @@ def extract_paths(mime) -> list[str]:
     """Extract local media files and directories from dropped QMimeData.
 
     Directories are returned as-is (the playlist model scans them
-    recursively); individual files are filtered to supported media types.
+    recursively); individual files are filtered to supported media types and
+    ``.cue`` sheets (which the model expands into their referenced files).
     """
     paths: list[str] = []
     if not mime.hasUrls():
@@ -32,7 +37,7 @@ def extract_paths(mime) -> list[str]:
         if not url.isLocalFile():
             continue
         path = url.toLocalFile()
-        if os.path.isdir(path) or is_media(path):
+        if _is_droppable(path):
             paths.append(path)
     return paths
 

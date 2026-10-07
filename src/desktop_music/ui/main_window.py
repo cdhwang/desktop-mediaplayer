@@ -349,6 +349,8 @@ class MainWindow(QMainWindow):
         """
         import os
 
+        from desktop_music.services.cue import is_cue
+
         first = args[0]
         if os.path.isdir(first):
             self._playlist.clear()
@@ -358,6 +360,15 @@ class MainWindow(QMainWindow):
             return
 
         if not os.path.isfile(first):
+            return
+
+        # A cue sheet given directly expands into its referenced media files;
+        # the cue file itself is never added. Play the first expanded track.
+        if is_cue(first):
+            self._playlist.clear()
+            added = self._playlist.add_paths(args)
+            if added > 0:
+                self._controller.play_row(0)
             return
 
         directory = os.path.dirname(os.path.abspath(first)) or "."
@@ -378,7 +389,10 @@ class MainWindow(QMainWindow):
         self._controller.play_row(row)
 
     def _open_files_dialog(self) -> None:
-        patterns = " ".join(f"*{ext}" for ext in sorted(MEDIA_EXTENSIONS))
+        from desktop_music.services.cue import CUE_EXTENSION
+
+        exts = sorted(MEDIA_EXTENSIONS | {CUE_EXTENSION})
+        patterns = " ".join(f"*{ext}" for ext in exts)
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Add Media Files", "", f"Media Files ({patterns});;All Files (*)"
         )
