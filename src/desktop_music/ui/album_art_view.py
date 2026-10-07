@@ -8,12 +8,9 @@ small mini-spectrum on the right.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QPointF, QRectF, Qt
+from PyQt6.QtCore import QPointF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPixmap
 from PyQt6.QtWidgets import (
-    QGraphicsBlurEffect,
-    QGraphicsPixmapItem,
-    QGraphicsScene,
     QGridLayout,
     QLabel,
     QVBoxLayout,
@@ -24,28 +21,46 @@ from desktop_music.core.formatting import format_ms
 from desktop_music.services.metadata import Metadata
 from desktop_music.ui.spectrum_widget import MiniSpectrum
 
-# How strongly to blur the background fill (PotPlayer uses a heavy blur).
-_BLUR_RADIUS = 40
+# Fraction of the shorter widget dimension used by the crisp foreground art,
+# leaving a margin on every side where the blurred background shows through.
+_FG_SCALE = 0.82
+# How small to shrink the image before scaling it back up; smaller => blurrier.
+# This downsample/upsample approach is backend-independent (works on Windows,
+# unlike QGraphicsBlurEffect rendered to an offscreen pixmap).
+_BLUR_DOWNSCALE = 0.04
+# Number of smooth up/down passes; more passes => softer, heavier blur.
+_BLUR_PASSES = 3
 # Darken the blurred background so the foreground art stays prominent.
-_BG_DIM = 90  # alpha of the black overlay drawn on top of the blur (0-255)
+_BG_DIM = 110  # alpha of the black overlay drawn on top of the blur (0-255)
 
 
-def _blur_pixmap(src: QPixmap, radius: int = _BLUR_RADIUS) -> QPixmap:
-    """Return a Gaussian-blurred copy of *src* via an offscreen scene."""
-    scene = QGraphicsScene()
-    item = QGraphicsPixmapItem(src)
-    effect = QGraphicsBlurEffect()
-    effect.setBlurRadius(radius)
-    item.setGraphicsEffect(effect)
-    scene.addItem(item)
+def _blur_pixmap(src: QPixmap) -> QPixmap:
+    """Return a blurred copy of *src* using downscale/upscale passes.
 
-    result = QPixmap(src.size())
-    result.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(result)
-    # Render with a margin so edge pixels blur against real content, then
-    # the full rect is drawn into the result.
-    scene.render(painter, QRectF(result.rect()), QRectF(src.rect()))
-    painter.end()
+    Uses only ``QPixmap.scaled`` so it renders identically across platforms,
+    avoiding the ``QGraphicsBlurEffect`` offscreen-render issues seen on
+    Windows.
+    """
+    if src.isNull():
+        return src
+    w, h = src.width(), src.height()
+    small_w = max(1, int(w * _BLUR_DOWNSCALE))
+    small_h = max(1, int(h * _BLUR_DOWNSCALE))
+
+    result = src
+    for _ in range(_BLUR_PASSES):
+        small = result.scaled(
+            small_w,
+            small_h,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        result = small.scaled(
+            w,
+            h,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
     return result
 
 
@@ -119,9 +134,13 @@ class _ArtCanvas(QWidget):
             painter.drawPixmap(0, 0, bg)
             painter.fillRect(rect, QColor(0, 0, 0, _BG_DIM))
 
-        # 2) crisp, aspect-fitted foreground centered in the widget.
+        # 2) crisp, aspect-fitted foreground, inset so a margin of the blurred
+        #    background always shows on every side.
+        box_w = int(rect.width() * _FG_SCALE)
+        box_h = int(rect.height() * _FG_SCALE)
         fg = self._source.scaled(
-            self.size(),
+            box_w,
+            box_h,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
