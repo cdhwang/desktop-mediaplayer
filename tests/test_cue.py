@@ -58,6 +58,21 @@ def test_parse_cue_missing_file_returns_empty(tmp_path) -> None:
     assert parse_cue_files(str(tmp_path / "nope.cue")) == []
 
 
+def test_parse_cue_accepts_ape(tmp_path) -> None:
+    ape = _write(tmp_path / "Album.ape")
+    cue = tmp_path / "Album.cue"
+    cue.write_text('FILE "Album.ape" WAVE\n  TRACK 01 AUDIO\n')
+    assert parse_cue_files(str(cue)) == [os.path.normpath(ape)]
+
+
+def test_parse_cue_stem_fallback_on_extension_mismatch(tmp_path) -> None:
+    # The cue references an .ape but only a same-stem .flac exists on disk.
+    flac = _write(tmp_path / "Album.flac")
+    cue = tmp_path / "Album.cue"
+    cue.write_text('FILE "Album.ape" WAVE\n  TRACK 01 AUDIO\n')
+    assert parse_cue_files(str(cue)) == [os.path.normpath(flac)]
+
+
 # -- playlist integration --------------------------------------------------
 
 

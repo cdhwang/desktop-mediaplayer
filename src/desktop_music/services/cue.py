@@ -57,15 +57,40 @@ def parse_cue_files(cue_path: str) -> list[str]:
         name = match.group(1) or match.group(2)
         if not name:
             continue
-        candidate = os.path.normpath(
-            name if os.path.isabs(name) else os.path.join(base_dir, name)
-        )
-        if not is_media(candidate):
+        resolved = _resolve_reference(base_dir, name)
+        if resolved is None or resolved in seen:
             continue
-        if not os.path.isfile(candidate):
-            continue
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        result.append(candidate)
+        seen.add(resolved)
+        result.append(resolved)
     return result
+
+
+def _resolve_reference(base_dir: str, name: str) -> str | None:
+    """Resolve a cue ``FILE`` reference to an existing media file, or None.
+
+    First tries the referenced path as-is (absolute, or relative to the cue
+    sheet). If that exact path isn't a usable media file, falls back to
+    looking for a media file in the same directory sharing the reference's
+    base name — this tolerates cue sheets whose ``FILE`` extension doesn't
+    match the actual audio file (a common real-world inconsistency).
+    """
+    candidate = os.path.normpath(
+        name if os.path.isabs(name) else os.path.join(base_dir, name)
+    )
+    if is_media(candidate) and os.path.isfile(candidate):
+        return candidate
+
+    # Fallback: same directory, same stem, any supported media extension.
+    ref_dir = os.path.dirname(candidate) or base_dir
+    stem = os.path.splitext(os.path.basename(candidate))[0].lower()
+    try:
+        entries = sorted(os.listdir(ref_dir))
+    except OSError:
+        return None
+    for entry in entries:
+        full = os.path.join(ref_dir, entry)
+        if not os.path.isfile(full) or not is_media(full):
+            continue
+        if os.path.splitext(entry)[0].lower() == stem:
+            return os.path.normpath(full)
+    return None

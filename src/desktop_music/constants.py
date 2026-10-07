@@ -6,8 +6,30 @@ APP_NAME = "Desktop Music"
 ORG_NAME = "desktop-music"
 
 # Supported media extensions (lowercase, with leading dot).
-AUDIO_EXTENSIONS: frozenset[str] = frozenset({".mp3", ".flac", ".wav"})
-VIDEO_EXTENSIONS: frozenset[str] = frozenset({".mp4", ".mkv", ".avi"})
+# libVLC decodes a wide range of formats; include common lossless/lossy
+# audio containers (e.g. Monkey's Audio ``.ape``, often referenced by cue
+# sheets) so they are accepted by directory scans, drops, and cue parsing.
+AUDIO_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".mp3",
+        ".flac",
+        ".wav",
+        ".ape",
+        ".m4a",
+        ".aac",
+        ".ogg",
+        ".opus",
+        ".wma",
+        ".wv",
+        ".tta",
+        ".alac",
+        ".aiff",
+        ".aif",
+    }
+)
+VIDEO_EXTENSIONS: frozenset[str] = frozenset(
+    {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".mpg", ".mpeg"}
+)
 MEDIA_EXTENSIONS: frozenset[str] = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
 
 
