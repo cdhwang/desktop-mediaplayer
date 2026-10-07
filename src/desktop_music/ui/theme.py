@@ -29,6 +29,14 @@ QMainWindow, QWidget {{
     background-color: {_BG};
 }}
 
+QToolTip {{
+    background-color: {_BG_ALT};
+    color: {_TEXT};
+    border: 1px solid {_BORDER};
+    padding: 3px 6px;
+    font-size: 12px;
+}}
+
 QMenuBar {{
     background-color: {_BG_ALT};
     color: {_TEXT};

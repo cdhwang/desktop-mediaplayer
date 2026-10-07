@@ -116,6 +116,7 @@ class ControlBar(QWidget):
         self._mute_btn.setObjectName("iconButton")
         self._mute_btn.setFixedWidth(28)
         self._mute_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._mute_btn.setToolTip("Mute/Unmute")
         self._mute_btn.clicked.connect(self.mute_clicked)
 
         self._volume_slider = QSlider(Qt.Orientation.Horizontal)
@@ -134,22 +135,36 @@ class ControlBar(QWidget):
         row1.addWidget(self._volume_slider)
 
         # ---- Row 2: transport | time | settings ------------------------
-        self._play_btn = self._icon_btn("\u25b6", self.play_pause_clicked)
-        self._stop_btn = self._icon_btn("\u23f9", self.stop_clicked)
-        self._prev_btn = self._icon_btn("\u23ee", self.previous_clicked)
-        self._next_btn = self._icon_btn("\u23ed", self.next_clicked)
-        self._eject_btn = self._icon_btn("\u23cf", self.eject_clicked)
+        self._play_btn = self._icon_btn(
+            "\u25b6", self.play_pause_clicked, "Play/Pause"
+        )
+        self._stop_btn = self._icon_btn("\u23f9", self.stop_clicked, "Stop")
+        self._prev_btn = self._icon_btn(
+            "\u23ee", self.previous_clicked, "Previous"
+        )
+        self._next_btn = self._icon_btn("\u23ed", self.next_clicked, "Next")
+        self._eject_btn = self._icon_btn(
+            "\u23cf", self.eject_clicked, "Open file(s)"
+        )
 
         self._time_lbl = QLabel("00:00:00 / 00:00:00")
         self._time_lbl.setObjectName("timeLabel")
 
-        self._shuffle_btn = self._icon_btn("\U0001f500", self.shuffle_clicked)
-        self._repeat_btn = self._icon_btn("\U0001f501", self.repeat_clicked)
+        self._shuffle_btn = self._icon_btn(
+            "\U0001f500", self.shuffle_clicked, "Shuffle"
+        )
+        self._repeat_btn = self._icon_btn(
+            "\U0001f501", self.repeat_clicked, "Repeat"
+        )
         self._shuffle_btn.setCheckable(True)
         self._repeat_btn.setCheckable(True)
-        self._settings_btn = self._icon_btn("\u2699", self.settings_clicked)
-        self._menu_btn = self._icon_btn("\u2630", self.menu_clicked)
-        self._fullscreen_btn = self._icon_btn("\u26f6", self.fullscreen_clicked)
+        self._settings_btn = self._icon_btn(
+            "\u2699", self.settings_clicked, "Settings"
+        )
+        self._menu_btn = self._icon_btn("\u2630", self.menu_clicked, "Menu")
+        self._fullscreen_btn = self._icon_btn(
+            "\u26f6", self.fullscreen_clicked, "Fullscreen"
+        )
 
         row2 = QHBoxLayout()
         row2.setContentsMargins(0, 0, 0, 0)
@@ -174,11 +189,13 @@ class ControlBar(QWidget):
         outer.addLayout(row1)
         outer.addLayout(row2)
 
-    def _icon_btn(self, glyph: str, signal) -> QPushButton:
+    def _icon_btn(self, glyph: str, signal, tooltip: str = "") -> QPushButton:
         btn = QPushButton(glyph)
         btn.setObjectName("iconButton")
         btn.setFixedWidth(34)
         btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        if tooltip:
+            btn.setToolTip(tooltip)
         btn.clicked.connect(signal)
         return btn
 
@@ -204,12 +221,14 @@ class ControlBar(QWidget):
 
     def set_playing(self, playing: bool) -> None:
         self._play_btn.setText("\u23f8" if playing else "\u25b6")
+        self._play_btn.setToolTip("Pause" if playing else "Play")
 
     def set_volume_display(self, volume: int, muted: bool) -> None:
         self._volume_slider.blockSignals(True)
         self._volume_slider.setValue(volume)
         self._volume_slider.blockSignals(False)
         self._mute_btn.setText("\U0001f507" if muted else "\U0001f50a")
+        self._mute_btn.setToolTip("Unmute" if muted else "Mute")
 
     def set_play_mode_display(self, shuffle: bool, repeat: str) -> None:
         self._shuffle_btn.setChecked(shuffle)
