@@ -14,7 +14,7 @@ Row indices emitted outward are always *source* rows (filter-independent).
 from __future__ import annotations
 
 from PyQt6.QtCore import QMimeData, QModelIndex, QRect, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QDrag, QPen, QPixmap
+from PyQt6.QtGui import QColor, QDrag, QFontMetrics, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -98,14 +98,30 @@ class _TrackDelegate(QStyledItemDelegate):
         duration_ms = index.data(DurationRole) or 0
         duration = format_ms(duration_ms) if duration_ms else ""
 
+        metrics = QFontMetrics(option.font)
+
         # Reserve space for the marker on the playing row so text does not
         # shift relative to other rows.
         left_pad = 8 + self._MARKER_W if is_playing else 8
-        left = rect.adjusted(left_pad, 0, -70, 0)
+
+        # Reserve space on the right only when a duration is known. Until the
+        # duration is decoded, the title gets the full row width; once known,
+        # the duration is right-aligned and the title is elided to fit.
+        if duration:
+            duration_w = metrics.horizontalAdvance(duration)
+            right_reserve = duration_w + 16  # gap + right margin
+        else:
+            right_reserve = 8
+
+        left = rect.adjusted(left_pad, 0, -right_reserve, 0)
+        label = f"{row:02d}.  {title}"
+        elided = metrics.elidedText(
+            label, Qt.TextElideMode.ElideRight, left.width()
+        )
         painter.drawText(
             left,
             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-            f"{row:02d}.  {title}",
+            elided,
         )
         if duration:
             right = rect.adjusted(0, 0, -8, 0)
@@ -312,6 +328,10 @@ class PlaylistPanel(QWidget):
         self._view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._view.setUniformItemSizes(True)
+        self._view.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._view.setTextElideMode(Qt.TextElideMode.ElideRight)
         self._view.doubleClicked.connect(
             lambda index: self.track_activated.emit(self._proxy.to_source_row(index.row()))
         )
