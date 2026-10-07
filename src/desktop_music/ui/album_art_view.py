@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 
 from desktop_music.core.formatting import format_ms
 from desktop_music.services.metadata import Metadata
+from desktop_music.ui.marquee_label import MarqueeLabel
 from desktop_music.ui.spectrum_widget import MiniSpectrum
 
 # Fraction of the shorter widget dimension used by the crisp foreground art,
@@ -173,9 +174,8 @@ class AlbumArtView(QWidget):
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
 
-        self._title = QLabel("")
+        self._title = MarqueeLabel("")
         self._title.setObjectName("nowPlayingTitle")
-        self._title.setWordWrap(False)
         self._tech = QLabel("")
         self._tech.setObjectName("nowPlayingTech")
 

@@ -72,6 +72,12 @@ class PlaylistModel(QAbstractListModel):
         track = self._tracks[index.row()]
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
             return track.display_title
+        if role == Qt.ItemDataRole.ToolTipRole:
+            # Full, untruncated info for the hover tooltip: the display title
+            # plus the source path so long names are always readable.
+            if track.path and track.path != track.display_title:
+                return f"{track.display_title}\n{track.path}"
+            return track.display_title
         if role == PathRole:
             return track.path
         if role == TitleRole:
