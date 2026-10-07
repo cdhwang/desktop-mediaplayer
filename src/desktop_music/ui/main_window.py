@@ -115,6 +115,14 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        # On Windows the central display promotes to a *native* window (for
+        # libVLC video embedding). Native child windows don't repaint smoothly
+        # during a live splitter drag — the handle appears to "jump" and snap
+        # to discrete positions. Deferring the actual resize until the drag is
+        # released keeps the interaction smooth on every platform (on Linux
+        # opaque resizing already works, so this is a harmless no-op there).
+        self._splitter.setOpaqueResize(False)
+        self._splitter.setChildrenCollapsible(False)
 
         # Left column: the display area with the control bar stacked *below*
         # it, so the seek/volume bar only spans the playback area — not the
@@ -397,11 +405,17 @@ class MainWindow(QMainWindow):
         from desktop_music.constants import is_audio, is_video
 
         if is_video(path):
-            # embed video output into the native surface and show it
+            # embed video output into the native surface and show it.
+            # Promoting the surface to a native window and switching the
+            # stacked page can nudge the splitter on Windows, so snapshot the
+            # splitter sizes and restore them after the switch to keep the
+            # playback/playlist divide exactly where the user left it.
+            saved_sizes = self._splitter.sizes()
             surface = self._central_display.video
             self._controller.backend.set_video_window(surface.native_window_id())
             self._central_display.show_page("video")
             self._central_display.spectrum.stop()
+            self._splitter.setSizes(saved_sizes)
         else:
             self._central_display.show_page("album_art")
             self._central_display.show_metadata(meta, fallback_title=fallback)

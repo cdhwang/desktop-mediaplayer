@@ -9,7 +9,7 @@ so later tasks can plug in without touching the switching logic.
 from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QStackedWidget, QWidget
+from PyQt6.QtWidgets import QSizePolicy, QStackedWidget, QWidget
 
 from desktop_music.services.metadata import Metadata
 from desktop_music.ui.album_art_view import AlbumArtView
@@ -34,6 +34,15 @@ class CentralDisplay(QStackedWidget):
         super().__init__(parent)
         self._pages: dict[str, QWidget] = {}
         self.setAcceptDrops(True)
+
+        # Keep a stable size policy regardless of which page is shown. The
+        # video page promotes to a native window with its own minimum size,
+        # and switching to it on playback used to make the splitter re-divide
+        # space on Windows (the panel appeared to "jump"). An Ignored width
+        # policy means the splitter — not the current page's size hint —
+        # decides how wide this area is, so page switches no longer disturb
+        # the splitter layout.
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
 
         self.album_art = AlbumArtView()
         self.add_page(PAGE_ALBUM_ART, self.album_art)
