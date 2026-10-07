@@ -87,6 +87,67 @@ def test_adding_cue_expands_and_excludes_cue_itself(tmp_path) -> None:
     assert os.path.normpath(wav) in paths
 
 
+# -- per-track expansion (one song per cue TRACK) --------------------------
+
+
+def test_cue_single_file_splits_into_tracks(tmp_path) -> None:
+    from desktop_music.services.cue import parse_cue_tracks, _mmssff_to_ms
+
+    ape = _write(tmp_path / "Album.ape")
+    cue = tmp_path / "Album.cue"
+    cue.write_text(
+        'PERFORMER "Band"\n'
+        'TITLE "The Album"\n'
+        'FILE "Album.ape" WAVE\n'
+        '  TRACK 01 AUDIO\n'
+        '    TITLE "Opener"\n'
+        '    INDEX 01 00:00:00\n'
+        '  TRACK 02 AUDIO\n'
+        '    TITLE "Second"\n'
+        '    INDEX 01 02:30:00\n'
+        '  TRACK 03 AUDIO\n'
+        '    TITLE "Closer"\n'
+        '    INDEX 01 05:00:00\n'
+    )
+    tracks = parse_cue_tracks(str(cue))
+    assert [t.title for t in tracks] == ["Opener", "Second", "Closer"]
+    assert all(t.path == os.path.normpath(ape) for t in tracks)
+    assert all(t.artist == "Band" for t in tracks)
+    assert tracks[0].start_ms == 0
+    assert tracks[1].start_ms == _mmssff_to_ms(2, 30, 0)
+    assert tracks[2].start_ms == _mmssff_to_ms(5, 0, 0)
+    # end offsets chain to the next track's start; last is 0 (to EOF)
+    assert tracks[0].end_ms == tracks[1].start_ms
+    assert tracks[1].end_ms == tracks[2].start_ms
+    assert tracks[2].end_ms == 0
+
+
+def test_adding_single_file_cue_adds_one_item_per_track(tmp_path) -> None:
+    _write(tmp_path / "Album.ape")
+    cue = tmp_path / "Album.cue"
+    cue.write_text(
+        'FILE "Album.ape" WAVE\n'
+        '  TRACK 01 AUDIO\n    TITLE "A"\n    INDEX 01 00:00:00\n'
+        '  TRACK 02 AUDIO\n    TITLE "B"\n    INDEX 01 03:00:00\n'
+    )
+    m = PlaylistModel()
+    added = m.add_paths([str(cue)])
+    assert added == 2
+    assert [t.title for t in m.tracks] == ["A", "B"]
+    assert m.tracks[0].is_cue_track is True  # has an end bound
+    assert m.tracks[0].end_ms > 0
+    assert not any(t.path.endswith(".cue") for t in m.tracks)
+
+
+def test_mmssff_conversion() -> None:
+    from desktop_music.services.cue import _mmssff_to_ms
+
+    assert _mmssff_to_ms(0, 0, 0) == 0
+    assert _mmssff_to_ms(1, 0, 0) == 60_000
+    assert _mmssff_to_ms(0, 1, 0) == 1_000
+    assert _mmssff_to_ms(0, 0, 75) == 1_000  # 75 frames == 1 second
+
+
 def test_directory_scan_excludes_cue(tmp_path) -> None:
     _make_album(tmp_path)
     m = PlaylistModel()

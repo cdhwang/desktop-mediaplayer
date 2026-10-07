@@ -56,6 +56,14 @@ class PlayerController(QObject):
         self._playlist = None  # type: ignore[assignment]
         self._play_mode = PlayMode()
 
+        # Current cue-track segment within the backing file (ms). When
+        # ``_seg_end`` > 0 playback is confined to [_seg_start, _seg_end) and
+        # auto-advances at the boundary. ``_seg_start``/``_seg_end`` are 0 for
+        # ordinary whole-file tracks.
+        self._seg_start = 0
+        self._seg_end = 0
+        self._seg_pending_seek = False
+
         self._timer = QTimer(self)
         self._timer.setInterval(_POLL_INTERVAL_MS)
         self._timer.timeout.connect(self._poll)
@@ -85,7 +93,20 @@ class PlayerController(QObject):
         self._playlist.set_current(row)
         track = self._playlist.track_at(row)
         if track is not None:
-            self.open(track.path, autoplay=autoplay)
+            self._seg_start = getattr(track, "start_ms", 0) or 0
+            self._seg_end = getattr(track, "end_ms", 0) or 0
+            # If several cue tracks share one backing file we can seek within
+            # the already-loaded media instead of reloading it.
+            same_file = self._backend.current_path == track.path
+            if same_file and self._seg_start >= 0:
+                self._backend.seek(self._seg_start)
+                self._seg_pending_seek = False
+                self.media_changed.emit(track.path)
+                if autoplay:
+                    self.play()
+            else:
+                self._seg_pending_seek = self._seg_start > 0
+                self.open(track.path, autoplay=autoplay)
 
     def next(self) -> None:
         """Advance to the next track (explicit user action)."""
@@ -154,16 +175,32 @@ class PlayerController(QObject):
         self._backend.stop()
 
     def seek_to_ms(self, ms: int) -> None:
-        self._backend.seek(ms)
+        # Interpret *ms* relative to the current cue segment, if any.
+        self._backend.seek(self._seg_start + max(0, ms))
 
     def seek_to_fraction(self, fraction: float) -> None:
-        self._backend.set_position(fraction)
+        if self._seg_start > 0 or self._seg_end > 0:
+            length = self._backend.get_length()
+            seg_len = (
+                self._seg_end - self._seg_start
+                if self._seg_end > self._seg_start
+                else max(0, length - self._seg_start)
+            )
+            self._backend.seek(self._seg_start + int(seg_len * fraction))
+        else:
+            self._backend.set_position(fraction)
 
     def seek_relative(self, delta_ms: int) -> None:
         current = self._backend.get_time()
         if current < 0:
             current = 0
-        self._backend.seek(current + delta_ms)
+        target = current + delta_ms
+        # Keep seeks within the current cue segment.
+        if self._seg_start > 0:
+            target = max(self._seg_start, target)
+        if self._seg_end > self._seg_start:
+            target = min(target, self._seg_end - 1)
+        self._backend.seek(target)
 
     # -- volume ------------------------------------------------------------
 
@@ -222,6 +259,16 @@ class PlayerController(QObject):
 
     def _poll(self) -> None:
         state = self._backend.get_state()
+
+        # Apply a deferred seek to the cue-track start once the media is
+        # actually playing (seeking before play() often no-ops in libVLC).
+        if self._seg_pending_seek and state in (
+            PlaybackState.PLAYING,
+            PlaybackState.BUFFERING,
+        ):
+            self._backend.seek(self._seg_start)
+            self._seg_pending_seek = False
+
         if state != self._last_state:
             self._last_state = state
             self.state_changed.emit(state)
@@ -232,7 +279,23 @@ class PlayerController(QObject):
         time_ms = self._backend.get_time()
         if time_ms < 0:
             time_ms = 0
-        self.position_changed.emit(time_ms, length)
+
+        # Cue track: auto-advance at the segment boundary and report time
+        # relative to the segment so the UI shows per-track position/length.
+        if self._seg_end > self._seg_start and not self._seg_pending_seek:
+            if time_ms >= self._seg_end:
+                self.playback_ended.emit()
+                return
+        if self._seg_start > 0 or self._seg_end > 0:
+            seg_len = (
+                self._seg_end - self._seg_start
+                if self._seg_end > self._seg_start
+                else max(0, length - self._seg_start)
+            )
+            rel = max(0, time_ms - self._seg_start)
+            self.position_changed.emit(rel, seg_len)
+        else:
+            self.position_changed.emit(time_ms, length)
 
     # -- lifecycle ---------------------------------------------------------
 

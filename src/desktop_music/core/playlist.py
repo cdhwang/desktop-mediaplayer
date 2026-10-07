@@ -36,8 +36,17 @@ class Track:
     title: str = ""
     artist: str = ""
     duration_ms: int = 0
+    # Cue-sheet track bounds within ``path`` (ms). ``end_ms == 0`` means
+    # "until the end of the file". When both are 0 the whole file plays.
+    start_ms: int = 0
+    end_ms: int = 0
     # extra metadata slots filled by later tasks (album, art, etc.)
     extra: dict = field(default_factory=dict)
+
+    @property
+    def is_cue_track(self) -> bool:
+        """True when this entry is a slice of a larger backing file."""
+        return self.start_ms > 0 or self.end_ms > 0
 
     @property
     def display_title(self) -> str:
@@ -165,13 +174,13 @@ class PlaylistModel(QAbstractListModel):
         inserted. The current (now-playing) index is shifted so it keeps
         pointing at the same track.
         """
-        collected = self._collect_paths(paths)
+        collected = self._collect_tracks(paths)
         if not collected:
             return 0
         row = max(0, min(row, len(self._tracks)))
         count = len(collected)
         self.beginInsertRows(QModelIndex(), row, row + count - 1)
-        self._tracks[row:row] = [Track(path=p) for p in collected]
+        self._tracks[row:row] = collected
         self.endInsertRows()
         if self._current == -1:
             self.set_current(0)
@@ -183,8 +192,44 @@ class PlaylistModel(QAbstractListModel):
         return count
 
     @staticmethod
+    def _collect_tracks(paths: list[str]) -> list["Track"]:
+        """Expand *paths* into :class:`Track` objects.
+
+        * directories are scanned recursively for supported media files;
+        * ``.cue`` sheets given directly are expanded into one track per
+          cue ``TRACK`` (each a slice of the backing file); the cue file
+          itself is never added;
+        * ``.cue`` files found while scanning a directory are ignored
+          (directory scans only collect supported media extensions).
+        """
+        from desktop_music.services.cue import is_cue, parse_cue_tracks
+
+        collected: list[Track] = []
+        for p in paths:
+            if os.path.isdir(p):
+                collected.extend(Track(path=f) for f in _scan_dir(p))
+            elif is_cue(p):
+                for ct in parse_cue_tracks(p):
+                    duration = (
+                        ct.end_ms - ct.start_ms if ct.end_ms > ct.start_ms else 0
+                    )
+                    collected.append(
+                        Track(
+                            path=ct.path,
+                            title=ct.title,
+                            artist=ct.artist,
+                            start_ms=ct.start_ms,
+                            end_ms=ct.end_ms,
+                            duration_ms=duration,
+                        )
+                    )
+            elif is_media(p):
+                collected.append(Track(path=p))
+        return collected
+
+    @staticmethod
     def _collect_paths(paths: list[str]) -> list[str]:
-        """Expand directories and filter to supported media files.
+        """Backward-compatible path-only collector (no cue track slicing).
 
         ``.cue`` sheets given directly are expanded into the media files they
         reference (the cue file itself is never added). ``.cue`` files found
