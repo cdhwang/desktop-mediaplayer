@@ -35,6 +35,9 @@ class CentralDisplay(WindowDragMixin, QStackedWidget):
     # -1 per down notch (callers scale this into a volume delta)
     volume_step = pyqtSignal(int)
 
+    # emitted when the playback area (audio pages) is double-clicked
+    double_clicked = pyqtSignal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._pages: dict[str, QWidget] = {}
@@ -146,6 +149,13 @@ class CentralDisplay(WindowDragMixin, QStackedWidget):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        # Double-clicking the audio playback area (album art / spectrum /
+        # lyrics) toggles play/pause. The video page uses its own surface,
+        # whose double-click is wired to fullscreen instead.
+        self.double_clicked.emit()
+        event.accept()
 
     # -- convenience -------------------------------------------------------
 

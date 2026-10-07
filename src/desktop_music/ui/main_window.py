@@ -9,6 +9,7 @@ menu bar / theming arrive in Task 15.
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QFileDialog,
     QMainWindow,
@@ -61,6 +62,15 @@ class MainWindow(QMainWindow):
         self._connect()
         self._restore_state()
         self._shortcuts.rebind_all()
+
+        # Enter / Return toggles fullscreen. This is a fixed binding (separate
+        # from the customizable F shortcut) covering both the main Return key
+        # and the numeric-keypad Enter.
+        for key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            sc = QShortcut(QKeySequence(key), self)
+            sc.setContext(Qt.ShortcutContext.WindowShortcut)
+            sc.activated.connect(self.toggle_fullscreen)
+
         if initial_media:
             self._open_initial_media(initial_media)
 
@@ -160,6 +170,18 @@ class MainWindow(QMainWindow):
         def shortcut(cid: str) -> QKeySequence:
             return QKeySequence(self._shortcuts.shortcut_for(cid))
 
+        def set_menu_shortcut(action: "QAction", cid: str) -> None:
+            """Show a command's key as a menu hint without binding it.
+
+            Actual key handling is owned by :class:`ShortcutManager` (window
+            scoped). Using ``WidgetShortcut`` context here makes the sequence
+            display next to the menu item without registering a second,
+            window-level binding — which would otherwise trigger Qt's
+            "Ambiguous shortcut overload" and disable the key entirely.
+            """
+            action.setShortcut(shortcut(cid))
+            action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+
         # -- File --
         file_menu = menubar.addMenu("&File")
         act_open = QAction("Open Files\u2026", self)
@@ -169,7 +191,7 @@ class MainWindow(QMainWindow):
         act_sub = QAction("Load Subtitle\u2026", self)
         act_sub.triggered.connect(self.open_subtitle_dialog)
         act_snap = QAction("Take Snapshot", self)
-        act_snap.setShortcut(shortcut(cmd.SNAPSHOT))
+        set_menu_shortcut(act_snap, cmd.SNAPSHOT)
         act_snap.triggered.connect(self.take_snapshot)
         act_quit = QAction("Quit", self)
         act_quit.triggered.connect(self.close)
@@ -190,7 +212,7 @@ class MainWindow(QMainWindow):
         act_lyrics = QAction("Lyrics", self)
         act_lyrics.triggered.connect(self.show_lyrics)
         act_fs = QAction("Toggle Fullscreen", self)
-        act_fs.setShortcut(shortcut(cmd.FULLSCREEN))
+        set_menu_shortcut(act_fs, cmd.FULLSCREEN)
         act_fs.triggered.connect(self.toggle_fullscreen)
         view_menu.addAction(act_art)
         view_menu.addAction(act_spec)
@@ -207,7 +229,7 @@ class MainWindow(QMainWindow):
             ("Previous", cmd.PREVIOUS),
         ):
             action = QAction(label, self)
-            action.setShortcut(shortcut(cid))
+            set_menu_shortcut(action, cid)
             action.triggered.connect(lambda _checked=False, c=cid: self.dispatch_command(c))
             pb_menu.addAction(action)
         pb_menu.addSeparator()
@@ -305,6 +327,7 @@ class MainWindow(QMainWindow):
         self._playlist.current_changed.connect(panel.highlight_current)
 
         self._central_display.video.double_clicked.connect(self.toggle_fullscreen)
+        self._central_display.double_clicked.connect(ctrl.toggle_pause)
         self._central_display.paths_dropped.connect(self._on_paths_dropped_play)
         self._central_display.volume_step.connect(
             lambda steps: ctrl.change_volume(steps * VOLUME_STEP)

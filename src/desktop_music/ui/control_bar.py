@@ -114,7 +114,7 @@ class ControlBar(QWidget):
 
         self._mute_btn = QPushButton("\U0001f50a")
         self._mute_btn.setObjectName("iconButton")
-        self._mute_btn.setFixedWidth(28)
+        self._mute_btn.setFixedSize(28, self._ICON_BTN_H)
         self._mute_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._mute_btn.setToolTip("Mute/Unmute")
         self._mute_btn.clicked.connect(self.mute_clicked)
@@ -189,10 +189,15 @@ class ControlBar(QWidget):
         outer.addLayout(row1)
         outer.addLayout(row2)
 
+    # Fixed size for every icon button so glyph changes (e.g. play <-> pause)
+    # can never alter the control-bar layout.
+    _ICON_BTN_W = 34
+    _ICON_BTN_H = 30
+
     def _icon_btn(self, glyph: str, signal, tooltip: str = "") -> QPushButton:
         btn = QPushButton(glyph)
         btn.setObjectName("iconButton")
-        btn.setFixedWidth(34)
+        btn.setFixedSize(self._ICON_BTN_W, self._ICON_BTN_H)
         btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         if tooltip:
             btn.setToolTip(tooltip)
