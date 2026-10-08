@@ -497,6 +497,7 @@ class MainWindow(QMainWindow):
 
         if not path:
             self._central_display.clear_metadata()
+            self.setWindowTitle(APP_NAME)
             return
         meta = read_metadata(path)
         fallback = os.path.basename(path)
@@ -517,6 +518,11 @@ class MainWindow(QMainWindow):
                 artist=current_track.artist or meta.artist,
             )
             fallback = current_track.display_title
+
+        # Reflect the now-playing track in the window title. Prefer
+        # "Title - Artist"; fall back to the file name / cue display title
+        # when tags are missing, then append the app name.
+        self.setWindowTitle(self._format_window_title(meta, fallback))
 
         if is_video(path):
             # embed video output into the native surface and show it.
@@ -553,6 +559,19 @@ class MainWindow(QMainWindow):
     def show_lyrics(self) -> None:
         """Switch the central display to the lyrics page."""
         self._central_display.show_page("lyrics")
+
+    @staticmethod
+    def _format_window_title(meta, fallback: str) -> str:
+        """Build the window title for the now-playing track.
+
+        Prefer "Title - Artist" from tags, falling back to *fallback* (the
+        file name or cue display title) when the title tag is missing. The
+        app name is always appended so the window stays identifiable.
+        """
+        title = (meta.title or "").strip() or fallback.strip()
+        artist = (meta.artist or "").strip()
+        label = f"{title} - {artist}" if title and artist else title
+        return f"{label} \u2014 {APP_NAME}" if label else APP_NAME
 
     def show_album_art(self) -> None:
         """Switch the central display to the album-art page."""

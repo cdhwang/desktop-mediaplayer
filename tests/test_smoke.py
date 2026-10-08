@@ -104,6 +104,42 @@ def test_audio_track_menu_populates(qtbot, tmp_path) -> None:
     window._central_display.spectrum._stop_thread()
 
 
+def test_window_title_formatting() -> None:
+    from desktop_music.constants import APP_NAME
+    from desktop_music.services.metadata import Metadata
+
+    fmt = MainWindow._format_window_title
+    # title + artist
+    assert fmt(Metadata(title="Song", artist="Band"), "file.mp3") == (
+        f"Song - Band \u2014 {APP_NAME}"
+    )
+    # title only
+    assert fmt(Metadata(title="Song"), "file.mp3") == f"Song \u2014 {APP_NAME}"
+    # no tags -> fall back to the file/display name
+    assert fmt(Metadata(), "file.mp3") == f"file.mp3 \u2014 {APP_NAME}"
+    # nothing at all -> bare app name
+    assert fmt(Metadata(), "") == APP_NAME
+
+
+def test_media_change_updates_window_title(qtbot, tmp_path) -> None:
+    from unittest.mock import patch
+
+    from desktop_music.constants import APP_NAME
+    from desktop_music.services.metadata import Metadata
+
+    window, _backend = _integration_window(qtbot, tmp_path)
+    with patch(
+        "desktop_music.ui.main_window.read_metadata",
+        return_value=Metadata(title="Hello", artist="World"),
+    ), patch("desktop_music.ui.main_window.read_lyrics", return_value=""):
+        window._on_media_changed("/music/track.mp3")
+    assert window.windowTitle() == f"Hello - World \u2014 {APP_NAME}"
+    # clearing the current media restores the bare app name
+    window._on_media_changed(None)
+    assert window.windowTitle() == APP_NAME
+    window._central_display.spectrum._stop_thread()
+
+
 def test_central_display_context_menu_signal(qtbot) -> None:
     from PyQt6.QtCore import QPoint
 
