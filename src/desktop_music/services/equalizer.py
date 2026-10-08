@@ -31,6 +31,19 @@ class EqualizerService:
         self._preset_index: int = PRESET_NONE
         self._presets = preset_names()
 
+    def rebind(self, backend) -> None:
+        """Point at a new backend and re-apply the current preset.
+
+        Used when the backend is recreated (e.g. toggling the audio
+        normalizer), since EQ state lives on the libVLC media player.
+        """
+        self._backend = backend
+        if self._preset_index != PRESET_NONE:
+            # re-apply without mutating _preset_index semantics
+            index = self._preset_index
+            self._preset_index = PRESET_NONE
+            self.apply_preset(index)
+
     @property
     def presets(self) -> list[str]:
         return list(self._presets)

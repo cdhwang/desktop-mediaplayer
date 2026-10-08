@@ -15,6 +15,8 @@ snapshots), and fully customizable keyboard shortcuts.
 - **Search**: filter by title / artist / album / filename
 - **Metadata & album art**: extracted with mutagen
 - **Equalizer**: libVLC built-in presets (Rock, Pop, Classical, …)
+- **Audio normalizer**: toggle libVLC's `normvol` volume normalizer on/off,
+  persisted between sessions
 - **Lyrics**: embedded tags (USLT / Vorbis) or a sidecar `.lrc` / `.txt`
 - **Spectrum visualizer**: offline FFT analysis synced to playback
 - **Video extras**: audio/subtitle track selection, external `.srt`

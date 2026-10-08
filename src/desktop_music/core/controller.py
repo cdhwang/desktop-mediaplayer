@@ -51,6 +51,8 @@ class PlayerController(QObject):
     # emitted right after an explicit seek: (position_ms, length_ms),
     # both relative to the current cue segment when one is active
     seeked = pyqtSignal(int, int)
+    # emitted when the audio normalizer is toggled (new on/off state)
+    normalize_changed = pyqtSignal(bool)
 
     def __init__(self, backend: VLCBackend | None = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -77,6 +79,16 @@ class PlayerController(QObject):
         self._seg_start = 0
         self._seg_end = 0
         self._seg_pending_seek = False
+
+        # Optional hook invoked after the backend is rebuilt (e.g. when the
+        # audio normalizer is toggled), so the UI can re-attach video output
+        # to the new MediaPlayer. Set by the window via set_backend_rebuilt_hook.
+        self._on_backend_rebuilt = None  # type: ignore[assignment]
+
+        # Deferred resume-seek after a backend rebuild (normalizer toggle).
+        self._resume_pending = False
+        self._resume_seek_ms = 0
+        self._resume_pause = False
 
         self._timer = QTimer(self)
         self._timer.setInterval(_POLL_INTERVAL_MS)
@@ -275,6 +287,87 @@ class PlayerController(QObject):
         self._backend.set_muted(not self._backend.is_muted())
         self.volume_changed.emit(self._volume, self._backend.is_muted())
 
+    # -- audio normalizer --------------------------------------------------
+
+    @property
+    def normalize(self) -> bool:
+        """Whether the volume normalizer (normvol) is currently enabled."""
+        return getattr(self._backend, "normalize", False) is True
+
+    def set_backend_rebuilt_hook(self, hook) -> None:
+        """Register a callable invoked after the backend is rebuilt.
+
+        The UI uses this to re-attach video output to the fresh MediaPlayer,
+        since toggling the normalizer replaces the whole backend instance.
+        """
+        self._on_backend_rebuilt = hook
+
+    def set_normalize(self, enabled: bool) -> None:
+        """Enable/disable the audio normalizer.
+
+        libVLC fixes the audio-filter chain at instance creation, so this
+        rebuilds the backend with the new setting and restores the current
+        playback state (track, position, volume, mute, rate, play/pause).
+        """
+        enabled = bool(enabled)
+        if enabled == self.normalize:
+            return
+
+        # --- snapshot current playback state ---
+        path = self._backend.current_path
+        was_playing = self._backend.is_playing()
+        state = self._backend.get_state()
+        was_paused = state == PlaybackState.PAUSED
+        time_ms = self._backend.get_time()
+        if time_ms < 0:
+            time_ms = 0
+        muted = self._backend.is_muted()
+        rate = self._backend.get_rate()
+        volume = self._volume
+
+        # --- rebuild backend with the new filter setting ---
+        self._backend.release()
+        self._backend = VLCBackend(normalize=enabled)
+
+        # Let the UI re-attach video output to the new player before playback.
+        if self._on_backend_rebuilt is not None:
+            try:
+                self._on_backend_rebuilt(self._backend)
+            except Exception:
+                pass
+
+        # --- restore state ---
+        self._volume = self._backend.set_volume(volume)
+        self._backend.set_muted(muted)
+        self._backend.set_rate(rate)
+        if path:
+            self._backend.load(path)
+            if was_playing or was_paused:
+                self._backend.play()
+                # Seek back to where we were; defer via the segment-pending
+                # mechanism so the seek lands after playback actually starts
+                # (seeking before play() often no-ops in libVLC).
+                self._resume_seek_ms = max(0, time_ms)
+                self._resume_pending = True
+                if was_paused:
+                    # settle into paused state after the resume seek
+                    self._resume_pause = True
+                else:
+                    self._resume_pause = False
+            else:
+                self._resume_pending = False
+        else:
+            self._resume_pending = False
+
+        self.normalize_changed.emit(self.normalize)
+        # re-emit volume so the slider/OSD reflect the restored backend
+        self.volume_changed.emit(self._volume, self._backend.is_muted())
+
+    def toggle_normalize(self) -> bool:
+        """Flip the normalizer on/off and return the new state."""
+        self.set_normalize(not self.normalize)
+        return self.normalize
+
     # -- playback rate -----------------------------------------------------
 
     def set_rate(self, rate: float) -> None:
@@ -319,6 +412,19 @@ class PlayerController(QObject):
 
     def _poll(self) -> None:
         state = self._backend.get_state()
+
+        # After a backend rebuild (normalizer toggle), restore the playback
+        # position once the new player is actually running, then optionally
+        # settle back into a paused state.
+        if self._resume_pending and state in (
+            PlaybackState.PLAYING,
+            PlaybackState.BUFFERING,
+        ):
+            if self._resume_seek_ms > 0:
+                self._backend.seek(self._resume_seek_ms)
+            if self._resume_pause:
+                self._backend.pause()
+            self._resume_pending = False
 
         # Apply a deferred seek to the cue-track start once the media is
         # actually playing (seeking before play() often no-ops in libVLC).

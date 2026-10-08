@@ -65,6 +65,34 @@ def test_set_volume_returns_applied_clamped_value() -> None:
     backend.release()
 
 
+def test_normalize_flag_defaults_off() -> None:
+    backend = VLCBackend()
+    assert backend.normalize is False
+    backend.release()
+
+
+def test_normalize_flag_enables_filter_instance() -> None:
+    # With normalize=True the instance is created with the normvol audio
+    # filter; the backend reports it and still constructs a usable player.
+    backend = VLCBackend(normalize=True)
+    assert backend.normalize is True
+    assert backend.player is not None
+    backend.release()
+
+
+def test_normalize_backend_can_play(wav_file) -> None:
+    backend = VLCBackend(normalize=True)
+    backend.load(wav_file)
+    backend.play()
+    live = {PlaybackState.OPENING, PlaybackState.BUFFERING, PlaybackState.PLAYING}
+    reached = any(
+        backend.get_state() in live or (time.sleep(0.05) or False) for _ in range(50)
+    )
+    assert reached, f"unexpected state {backend.get_state()}"
+    backend.stop()
+    backend.release()
+
+
 def test_mute_toggle() -> None:
     backend = VLCBackend()
     backend.set_muted(True)

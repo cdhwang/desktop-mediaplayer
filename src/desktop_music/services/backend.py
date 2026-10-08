@@ -43,13 +43,39 @@ class VLCBackend:
 
     Time values are handled in milliseconds (libVLC's native unit).
     Volume is an integer percentage in the range 0..100 (clamped).
+
+    ``normalize`` enables libVLC's ``normvol`` audio filter (a real-time
+    volume normalizer, similar in purpose to PotPlayer's normalizer). libVLC
+    only lets audio filters be chosen when the ``Instance`` is created, so
+    toggling normalization at runtime requires building a *new* backend — see
+    :class:`~desktop_music.core.controller.PlayerController`, which recreates
+    the backend and restores playback state when the setting changes.
     """
 
-    def __init__(self) -> None:
-        # --no-xlib avoids threading issues; video output window is set later.
-        self._instance: vlc.Instance = vlc.Instance()
+    # normvol tuning (see `vlc -H`): average power is measured over the last
+    # NORM_BUFF_SIZE audio buffers; volume is leveled toward NORM_MAX_LEVEL.
+    _NORM_MAX_LEVEL = 2.0
+    _NORM_BUFF_SIZE = 20
+
+    def __init__(self, normalize: bool = False) -> None:
+        self._normalize = bool(normalize)
+        args: list[str] = []
+        if self._normalize:
+            args += [
+                "--audio-filter=normvol",
+                f"--norm-max-level={self._NORM_MAX_LEVEL}",
+                f"--norm-buff-size={self._NORM_BUFF_SIZE}",
+            ]
+        # Instance args select the audio filter chain; video output window is
+        # attached later via set_video_window().
+        self._instance: vlc.Instance = vlc.Instance(*args) if args else vlc.Instance()
         self._player: vlc.MediaPlayer = self._instance.media_player_new()
         self._current_path: Optional[str] = None
+
+    @property
+    def normalize(self) -> bool:
+        """Whether the volume normalizer (normvol) filter is active."""
+        return self._normalize
 
     # -- media loading -----------------------------------------------------
 
