@@ -15,6 +15,7 @@ from desktop_music.services.metadata import Metadata
 from desktop_music.ui.album_art_view import AlbumArtView
 from desktop_music.ui.dnd import extract_paths, has_media_urls
 from desktop_music.ui.lyrics_view import LyricsView
+from desktop_music.ui.osd_overlay import OSDOverlay
 from desktop_music.ui.spectrum_widget import SpectrumWidget
 from desktop_music.ui.video_surface import VideoSurface
 from desktop_music.ui.window_drag import WindowDragMixin
@@ -70,6 +71,16 @@ class CentralDisplay(WindowDragMixin, QStackedWidget):
         self.video.volume_step.connect(self.volume_step)
 
         self.show_page(PAGE_ALBUM_ART)
+
+        # Transient status overlay (volume/seek/rate …) pinned to the
+        # top-left. Created last so it stacks above every page; it ignores
+        # mouse events so it never disturbs dragging or wheel-to-volume.
+        self.osd = OSDOverlay(self)
+        self.osd.raise_()
+
+    def show_osd(self, text: str) -> None:
+        """Flash a transient status message in the top-left corner."""
+        self.osd.show_message(text)
 
     def add_page(self, name: str, widget: QWidget) -> None:
         """Register *widget* under *name* (replacing any existing page)."""

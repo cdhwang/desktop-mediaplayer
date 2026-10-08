@@ -56,12 +56,17 @@ class MainWindow(QMainWindow):
         self._controller.set_playlist(self._playlist)
         self._equalizer = EqualizerService(self._controller.backend)
         self._auto_hide_timer: QTimer | None = None
+        # OSD stays suppressed until startup wiring + state restore finish, so
+        # programmatic volume/rate changes on launch don't flash the overlay.
+        self._osd_ready = False
         self._shortcuts = ShortcutManager(self, self.dispatch_command)
 
         self._build_ui()
         self._connect()
         self._restore_state()
         self._shortcuts.rebind_all()
+        # from here on, volume/seek/rate changes come from real user actions
+        self._osd_ready = True
 
         # Enter / Return toggles fullscreen. This is a fixed binding (separate
         # from the customizable F shortcut) covering both the main Return key
@@ -318,6 +323,9 @@ class MainWindow(QMainWindow):
         ctrl.position_changed.connect(self._on_position_changed)
         ctrl.state_changed.connect(self._on_state_changed)
         ctrl.volume_changed.connect(cb.set_volume_display)
+        ctrl.volume_changed.connect(self._on_volume_osd)
+        ctrl.seeked.connect(self._on_seeked_osd)
+        ctrl.rate_changed.connect(self._on_rate_osd)
         ctrl.play_mode_changed.connect(self._on_play_mode_changed)
         ctrl.media_changed.connect(self._on_media_changed)
 
@@ -432,6 +440,33 @@ class MainWindow(QMainWindow):
     def _on_position_changed(self, position_ms: int, length_ms: int) -> None:
         self._central_display.spectrum.set_position(position_ms)
         self._central_display.set_now_playing_time(position_ms, length_ms)
+
+    # -- OSD (transient on-screen status) ---------------------------------
+
+    def _on_volume_osd(self, volume: int, muted: bool) -> None:
+        if not self._osd_ready:
+            return
+        if muted:
+            self._central_display.show_osd("Muted")
+        else:
+            self._central_display.show_osd(f"Volume  {volume}%")
+
+    def _on_seeked_osd(self, position_ms: int, length_ms: int) -> None:
+        from desktop_music.core.formatting import format_ms
+
+        if not self._osd_ready:
+            return
+        if length_ms > 0:
+            self._central_display.show_osd(
+                f"{format_ms(position_ms)} / {format_ms(length_ms)}"
+            )
+        else:
+            self._central_display.show_osd(format_ms(position_ms))
+
+    def _on_rate_osd(self, rate: float) -> None:
+        if not self._osd_ready:
+            return
+        self._central_display.show_osd(f"Speed  {rate:.2f}x")
 
     def _on_media_changed(self, path) -> None:
         """Extract metadata for the current media and update the display."""

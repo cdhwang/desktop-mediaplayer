@@ -48,6 +48,9 @@ class PlayerController(QObject):
     play_mode_changed = pyqtSignal()
     # emitted when playback rate changes (new rate multiplier)
     rate_changed = pyqtSignal(float)
+    # emitted right after an explicit seek: (position_ms, length_ms),
+    # both relative to the current cue segment when one is active
+    seeked = pyqtSignal(int, int)
 
     def __init__(self, backend: VLCBackend | None = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -177,6 +180,7 @@ class PlayerController(QObject):
     def seek_to_ms(self, ms: int) -> None:
         # Interpret *ms* relative to the current cue segment, if any.
         self._backend.seek(self._seg_start + max(0, ms))
+        self._emit_seeked()
 
     def seek_to_fraction(self, fraction: float) -> None:
         if self._seg_start > 0 or self._seg_end > 0:
@@ -189,6 +193,7 @@ class PlayerController(QObject):
             self._backend.seek(self._seg_start + int(seg_len * fraction))
         else:
             self._backend.set_position(fraction)
+        self._emit_seeked()
 
     def seek_relative(self, delta_ms: int) -> None:
         current = self._backend.get_time()
@@ -201,6 +206,24 @@ class PlayerController(QObject):
         if self._seg_end > self._seg_start:
             target = min(target, self._seg_end - 1)
         self._backend.seek(target)
+        self._emit_seeked()
+
+    def _emit_seeked(self) -> None:
+        """Emit :attr:`seeked` with the post-seek position (segment-relative)."""
+        length = self._backend.get_length()
+        time_ms = self._backend.get_time()
+        if time_ms < 0:
+            time_ms = 0
+        if self._seg_start > 0 or self._seg_end > 0:
+            seg_len = (
+                self._seg_end - self._seg_start
+                if self._seg_end > self._seg_start
+                else max(0, length - self._seg_start)
+            )
+            rel = max(0, time_ms - self._seg_start)
+            self.seeked.emit(rel, seg_len)
+        else:
+            self.seeked.emit(time_ms, length)
 
     # -- volume ------------------------------------------------------------
 
