@@ -229,6 +229,86 @@ def test_now_playing_title_follows_cue_track(qtbot) -> None:
     ]
 
 
+def test_cue_mid_segment_end_advances_to_next(tmp_path) -> None:
+    """Reaching a non-final cue segment boundary advances to the next track
+    (seeking within the same backing file), not stops.
+    """
+    from unittest.mock import MagicMock
+
+    from desktop_music.core.controller import PlayerController
+    from desktop_music.core.playlist import PlaylistModel, Track
+    from desktop_music.services.backend import PlaybackState
+
+    backend = MagicMock()
+    backend.get_state.return_value = PlaybackState.PLAYING
+    backend.get_length.return_value = 4_300_000
+    backend.current_path = "/x/album.ape"
+    backend.get_volume.return_value = 50
+    backend.is_muted.return_value = False
+
+    controller = PlayerController(backend=backend)
+    controller._timer.stop()
+    model = PlaylistModel()
+    model._tracks = [
+        Track(path="/x/album.ape", title="A", start_ms=0, end_ms=2_000_000),
+        Track(path="/x/album.ape", title="B", start_ms=2_000_000, end_ms=0),
+    ]
+    model._current = 0
+    controller.set_playlist(model)
+    controller.play_row(0, autoplay=True)
+
+    backend.get_time.return_value = 2_000_000
+    controller._poll()
+
+    # advanced to track B (same file -> seek to its start), not stopped
+    assert model.current_index == 1
+    backend.stop.assert_not_called()
+    backend.seek.assert_any_call(2_000_000)
+
+
+def test_cue_last_segment_end_stops_backend(tmp_path) -> None:
+    """A cue segment that ends mid-file must stop, not bleed into the next
+    segment of the backing file.
+
+    Reproduces the bug where deleting the file's final cue track leaves a new
+    "last" track whose end_ms points mid-file; on reaching it, playback used
+    to continue playing the backing .ape past the track boundary.
+    """
+    from unittest.mock import MagicMock
+
+    from desktop_music.core.controller import PlayerController
+    from desktop_music.core.playlist import PlaylistModel, Track
+    from desktop_music.services.backend import PlaybackState
+
+    backend = MagicMock()
+    backend.get_state.return_value = PlaybackState.PLAYING
+    backend.get_length.return_value = 4_300_000  # whole .ape length
+    backend.current_path = "/x/album.ape"
+    backend.get_volume.return_value = 50
+    backend.is_muted.return_value = False
+
+    controller = PlayerController(backend=backend)
+    controller._timer.stop()
+    model = PlaylistModel()
+    # single remaining cue track whose segment ends well before EOF
+    model._tracks = [
+        Track(path="/x/album.ape", title="Last", artist="A",
+              start_ms=1_000_000, end_ms=2_000_000)
+    ]
+    model._current = 0
+    controller.set_playlist(model)
+
+    controller.play_row(0, autoplay=True)
+    assert controller._seg_end == 2_000_000
+
+    # Simulate reaching the segment boundary during a poll.
+    backend.get_time.return_value = 2_000_000
+    controller._poll()
+
+    # Playback must be stopped, not left running into the next segment.
+    backend.stop.assert_called()
+
+
 def test_directory_scan_excludes_cue(tmp_path) -> None:
     _make_album(tmp_path)
     m = PlaylistModel()

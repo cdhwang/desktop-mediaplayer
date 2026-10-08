@@ -150,12 +150,18 @@ class PlayerController(QObject):
     def _on_playback_ended(self) -> None:
         """Auto-advance when a track ends naturally."""
         if self._playlist is None or self._playlist.rowCount() == 0:
+            self.stop()
             return
         row = self._play_mode.next_row(
             self._playlist.current_index, self._playlist.rowCount(), auto=True
         )
         if row >= 0:
             self.play_row(row)
+        else:
+            # No next track (end of playlist, no repeat). Stop playback
+            # explicitly so a cue segment that ends mid-file doesn't let the
+            # backing media keep playing past the current track's boundary.
+            self.stop()
 
     # -- media -------------------------------------------------------------
 
@@ -307,6 +313,11 @@ class PlayerController(QObject):
         # relative to the segment so the UI shows per-track position/length.
         if self._seg_end > self._seg_start and not self._seg_pending_seek:
             if time_ms >= self._seg_end:
+                # Consume this segment boundary so we don't re-emit on the
+                # next poll if playback is stopped (end of playlist) and the
+                # backend still reports a time near the boundary. When a next
+                # track exists, play_row() re-arms _seg_start/_seg_end.
+                self._seg_end = 0
                 self.playback_ended.emit()
                 return
         if self._seg_start > 0 or self._seg_end > 0:
