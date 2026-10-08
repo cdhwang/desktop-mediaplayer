@@ -28,9 +28,9 @@ _FG_SCALE = 0.82
 # How small to shrink the image before scaling it back up; smaller => blurrier.
 # This downsample/upsample approach is backend-independent (works on Windows,
 # unlike QGraphicsBlurEffect rendered to an offscreen pixmap).
-_BLUR_DOWNSCALE = 0.04
+_BLUR_DOWNSCALE = 0.02
 # Number of smooth up/down passes; more passes => softer, heavier blur.
-_BLUR_PASSES = 3
+_BLUR_PASSES = 4
 # Darken the blurred background so the foreground art stays prominent.
 _BG_DIM = 110  # alpha of the black overlay drawn on top of the blur (0-255)
 
