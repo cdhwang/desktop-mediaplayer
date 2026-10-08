@@ -6,7 +6,7 @@ import sys
 
 from PyQt6.QtWidgets import QApplication
 
-from desktop_music.constants import APP_NAME, ORG_NAME
+from desktop_music.constants import APP_NAME, ORG_NAME, load_app_icon
 
 
 def create_app(argv: list[str] | None = None) -> QApplication:
@@ -20,6 +20,9 @@ def create_app(argv: list[str] | None = None) -> QApplication:
         app = QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(ORG_NAME)
+    icon = load_app_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
     from desktop_music.ui.theme import DARK_QSS
 
     app.setStyleSheet(DARK_QSS)

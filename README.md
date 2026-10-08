@@ -75,6 +75,10 @@ src/desktop_music/
     central_display.py# stacked: album art / spectrum / video / lyrics
     album_art_view.py, spectrum_widget.py, video_surface.py,
     lyrics_view.py, equalizer_dialog.py, shortcut_dialog.py, theme.py
+  resources/          # bundled assets
+    app_icon.svg      # source icon artwork
+    app_icon*.png     # rendered sizes (16-256) + .ico
+    render_icon.py    # regenerate PNGs from the SVG via QtSvg
 ```
 
 State (playlist, volume, play mode, EQ preset, shortcuts) is stored at

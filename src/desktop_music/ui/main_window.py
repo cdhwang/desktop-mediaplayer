@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from desktop_music.constants import APP_NAME, MEDIA_EXTENSIONS, is_media
+from desktop_music.constants import APP_NAME, MEDIA_EXTENSIONS, is_media, load_app_icon
 from desktop_music.core.controller import PlayerController, VOLUME_STEP
 from desktop_music.core.playlist import PlaylistModel, scan_dir_flat
 from desktop_music.core.shortcuts import ShortcutManager
@@ -47,6 +47,9 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(APP_NAME)
+        _icon = load_app_icon()
+        if not _icon.isNull():
+            self.setWindowIcon(_icon)
         self.resize(1100, 720)
         self.setMinimumSize(800, 480)
 

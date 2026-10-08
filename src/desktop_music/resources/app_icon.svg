@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c1c22"/>
+      <stop offset="1" stop-color="#0b0b0e"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f0d868"/>
+      <stop offset="1" stop-color="#d4a81e"/>
+    </linearGradient>
+    <radialGradient id="disc" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#2a2a32"/>
+      <stop offset="1" stop-color="#15151a"/>
+    </radialGradient>
+  </defs>
+
+  <!-- rounded square background -->
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#bg)" stroke="#2a2a30" stroke-width="2"/>
+
+  <!-- subtle disc behind the glyph -->
+  <circle cx="128" cy="128" r="92" fill="url(#disc)"/>
+  <circle cx="128" cy="128" r="92" fill="none" stroke="#2f2f38" stroke-width="2"/>
+
+  <!-- play triangle -->
+  <path d="M104 92 L104 164 L166 128 Z" fill="url(#accent)"/>
+
+  <!-- musical note, overlapping lower-right -->
+  <g fill="url(#accent)">
+    <!-- two stems -->
+    <rect x="148" y="150" width="9" height="54" rx="4"/>
+    <rect x="192" y="138" width="9" height="20" rx="4"/>
+    <!-- beam joining the two stems -->
+    <path d="M148 150 L201 136 L201 152 L148 166 Z"/>
+    <!-- note heads -->
+    <ellipse cx="140" cy="204" rx="17" ry="12" transform="rotate(-20 140 204)"/>
+    <ellipse cx="192" cy="158" rx="16" ry="11" transform="rotate(-20 192 158)"/>
+  </g>
+</svg>
