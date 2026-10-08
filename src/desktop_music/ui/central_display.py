@@ -39,6 +39,10 @@ class CentralDisplay(WindowDragMixin, QStackedWidget):
     # emitted when the playback area (audio pages) is double-clicked
     double_clicked = pyqtSignal()
 
+    # emitted on a context-menu (right-click) request, with the global
+    # position where the menu should appear
+    context_menu_requested = pyqtSignal(object)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._pages: dict[str, QWidget] = {}
@@ -69,6 +73,9 @@ class CentralDisplay(WindowDragMixin, QStackedWidget):
         # The video page can promote to a native window that consumes its own
         # wheel events, so forward its volume steps through our own signal.
         self.video.volume_step.connect(self.volume_step)
+        # Likewise forward right-clicks over the video surface so the context
+        # menu works everywhere on the playback area.
+        self.video.context_menu_requested.connect(self.context_menu_requested)
 
         self.show_page(PAGE_ALBUM_ART)
 
@@ -166,6 +173,12 @@ class CentralDisplay(WindowDragMixin, QStackedWidget):
         # lyrics) toggles play/pause. The video page uses its own surface,
         # whose double-click is wired to fullscreen instead.
         self.double_clicked.emit()
+        event.accept()
+
+    def contextMenuEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        # Right-clicking anywhere on the playback area opens the main menu
+        # (which used to live in the window's menu bar).
+        self.context_menu_requested.emit(event.globalPos())
         event.accept()
 
     # -- convenience -------------------------------------------------------

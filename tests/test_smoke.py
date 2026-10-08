@@ -63,13 +63,22 @@ def _integration_window(qtbot, tmp_path):
     return window, backend
 
 
-def test_menu_bar_has_expected_menus(qtbot, tmp_path) -> None:
+def test_context_menu_has_expected_groups(qtbot, tmp_path) -> None:
     window, _backend = _integration_window(qtbot, tmp_path)
-    titles = [a.text() for a in window.menuBar().actions()]
+    # the menu bar is hidden; entries now live in the context menu
+    assert window.menuBar().isHidden()
+    titles = [m.title() for m in window._menu_groups]
     assert "&File" in titles
     assert "&View" in titles
     assert "&Playback" in titles
     assert "&Tools" in titles
+
+
+def test_context_menu_builds_and_contains_groups(qtbot, tmp_path) -> None:
+    window, _backend = _integration_window(qtbot, tmp_path)
+    popup = window._build_main_menu()
+    submenu_titles = [a.menu().title() for a in popup.actions() if a.menu()]
+    assert submenu_titles == ["&File", "&View", "&Playback", "&Tools"]
 
 
 def test_theme_applied(qtbot) -> None:
@@ -93,4 +102,17 @@ def test_audio_track_menu_populates(qtbot, tmp_path) -> None:
     labels = [a.text() for a in window._audio_menu.actions()]
     assert labels == ["Track 1"]
     window._central_display.spectrum._stop_thread()
+
+
+def test_central_display_context_menu_signal(qtbot) -> None:
+    from PyQt6.QtCore import QPoint
+
+    from desktop_music.ui.central_display import CentralDisplay
+
+    display = CentralDisplay()
+    qtbot.addWidget(display)
+    received: list = []
+    display.context_menu_requested.connect(received.append)
+    display.context_menu_requested.emit(QPoint(10, 10))
+    assert received == [QPoint(10, 10)]
 

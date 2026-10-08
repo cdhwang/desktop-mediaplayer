@@ -19,6 +19,8 @@ class VideoSurface(QWidget):
     double_clicked = pyqtSignal()
     # emitted on mouse-wheel: +1 per up notch, -1 per down notch
     volume_step = pyqtSignal(int)
+    # emitted on right-click, with the global position for the menu
+    context_menu_requested = pyqtSignal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -53,3 +55,7 @@ class VideoSurface(QWidget):
             event.accept()
         else:
             super().wheelEvent(event)
+
+    def contextMenuEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        self.context_menu_requested.emit(event.globalPos())
+        event.accept()

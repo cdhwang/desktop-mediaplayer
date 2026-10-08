@@ -164,13 +164,16 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self._build_menu()
+        # No menu bar: every entry is reachable via the playback-area context
+        # menu and the control bar's hamburger button. Hide the (empty) bar
+        # QMainWindow creates by default so it doesn't take up any space.
+        self.menuBar().hide()
 
     def _build_menu(self) -> None:
         from PyQt6.QtGui import QAction, QKeySequence
+        from PyQt6.QtWidgets import QMenu
 
         from desktop_music.core import commands as cmd
-
-        menubar = self.menuBar()
 
         def shortcut(cid: str) -> QKeySequence:
             return QKeySequence(self._shortcuts.shortcut_for(cid))
@@ -187,8 +190,13 @@ class MainWindow(QMainWindow):
             action.setShortcut(shortcut(cid))
             action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
 
+        # The app has no menu bar; all entries live in a single context menu
+        # (right-click the playback area) and the control bar's hamburger
+        # button. Each top-level group is a QMenu owned by the window so it
+        # can be re-added to the context menu on every pop-up.
+
         # -- File --
-        file_menu = menubar.addMenu("&File")
+        file_menu = QMenu("&File", self)
         act_open = QAction("Open Files\u2026", self)
         act_open.triggered.connect(self._open_files_dialog)
         act_folder = QAction("Add Folder\u2026", self)
@@ -209,7 +217,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(act_quit)
 
         # -- View --
-        view_menu = menubar.addMenu("&View")
+        view_menu = QMenu("&View", self)
         act_art = QAction("Album Art", self)
         act_art.triggered.connect(self.show_album_art)
         act_spec = QAction("Spectrum", self)
@@ -226,7 +234,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(act_fs)
 
         # -- Playback --
-        pb_menu = menubar.addMenu("&Playback")
+        pb_menu = QMenu("&Playback", self)
         for label, cid in (
             ("Play / Pause", cmd.PLAY_PAUSE),
             ("Stop", cmd.STOP),
@@ -255,28 +263,42 @@ class MainWindow(QMainWindow):
         pb_menu.addAction(act_eq)
 
         # -- Tools --
-        tools_menu = menubar.addMenu("&Tools")
+        tools_menu = QMenu("&Tools", self)
         act_keys = QAction("Keyboard Shortcuts\u2026", self)
         act_keys.triggered.connect(self.open_shortcut_dialog)
         tools_menu.addAction(act_keys)
 
-    def _show_main_menu(self) -> None:
-        """Pop up a consolidated menu at the control bar's menu button.
+        # keep the group menus for assembling the pop-up menu on demand
+        self._menu_groups: list[QMenu] = [
+            file_menu,
+            view_menu,
+            pb_menu,
+            tools_menu,
+        ]
 
-        Mirrors PotPlayer's hamburger button, which exposes the same
-        entries as the top menu bar.
-        """
-        from PyQt6.QtGui import QCursor
-
-        menu = self.menuBar()
-        # QMenuBar can't be popped up directly; build a transient QMenu.
+    def _build_main_menu(self) -> "QMenu":
+        """Assemble the consolidated pop-up menu from the group menus."""
         from PyQt6.QtWidgets import QMenu
 
         popup = QMenu(self)
-        for action in menu.actions():
-            if action.menu():
-                popup.addMenu(action.menu())
-        popup.exec(QCursor.pos())
+        for group in self._menu_groups:
+            popup.addMenu(group)
+        return popup
+
+    def _show_main_menu(self) -> None:
+        """Pop up the consolidated menu at the cursor.
+
+        Used by the control bar's hamburger button and (via
+        :meth:`_show_context_menu`) by right-clicking the playback area.
+        Mirrors PotPlayer, which exposes every entry from one menu.
+        """
+        from PyQt6.QtGui import QCursor
+
+        self._build_main_menu().exec(QCursor.pos())
+
+    def _show_context_menu(self, global_pos) -> None:
+        """Pop up the consolidated menu at *global_pos* (a right-click)."""
+        self._build_main_menu().exec(global_pos)
 
     def _populate_audio_menu(self) -> None:
         from PyQt6.QtGui import QAction
@@ -336,6 +358,7 @@ class MainWindow(QMainWindow):
 
         self._central_display.video.double_clicked.connect(self.toggle_fullscreen)
         self._central_display.double_clicked.connect(ctrl.toggle_pause)
+        self._central_display.context_menu_requested.connect(self._show_context_menu)
         self._central_display.paths_dropped.connect(self._on_paths_dropped_play)
         self._central_display.volume_step.connect(
             lambda steps: ctrl.change_volume(steps * VOLUME_STEP)
