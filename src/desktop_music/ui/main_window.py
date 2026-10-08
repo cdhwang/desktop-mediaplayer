@@ -609,7 +609,7 @@ class MainWindow(QMainWindow):
             {
                 "playlist": self._playlist.to_state(),
                 "play_mode": self._controller.play_mode.to_state(),
-                "volume": self._controller.backend.get_volume(),
+                "volume": self._controller.volume,
                 "eq_preset": self._equalizer.preset_index,
                 "shortcuts": self._shortcuts.to_state(),
             }

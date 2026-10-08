@@ -104,9 +104,18 @@ class VLCBackend:
 
     # -- volume ------------------------------------------------------------
 
-    def set_volume(self, volume: int) -> None:
-        """Set output volume as a percentage 0..100."""
-        self._player.audio_set_volume(int(_clamp(volume, 0, 100)))
+    def set_volume(self, volume: int) -> int:
+        """Set output volume as a percentage 0..100.
+
+        Returns the clamped value that was applied. Callers should trust this
+        return value rather than immediately reading :meth:`get_volume`:
+        while media is playing, libVLC applies volume changes asynchronously,
+        so ``audio_get_volume`` can briefly report the *previous* value right
+        after ``audio_set_volume``.
+        """
+        applied = int(_clamp(volume, 0, 100))
+        self._player.audio_set_volume(applied)
+        return applied
 
     def get_volume(self) -> int:
         return int(self._player.audio_get_volume())

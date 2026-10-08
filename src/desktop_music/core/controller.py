@@ -59,6 +59,17 @@ class PlayerController(QObject):
         self._playlist = None  # type: ignore[assignment]
         self._play_mode = PlayMode()
 
+        # Last volume we *requested* (0..100). We track this ourselves instead
+        # of reading it back from libVLC: while playing, ``audio_get_volume``
+        # can briefly return the previous value right after ``audio_set_volume``
+        # (volume is applied asynchronously), which would make the OSD and
+        # slider show a stale value. Seeded from the backend's current volume
+        # when available (guarded so non-GUI/mock backends can't break init).
+        try:
+            self._volume: int = int(self._backend.get_volume())
+        except (TypeError, ValueError):
+            self._volume = 100
+
         # Current cue-track segment within the backing file (ms). When
         # ``_seg_end`` > 0 playback is confined to [_seg_start, _seg_end) and
         # auto-advances at the boundary. ``_seg_start``/``_seg_end`` are 0 for
@@ -233,16 +244,36 @@ class PlayerController(QObject):
 
     # -- volume ------------------------------------------------------------
 
+    @property
+    def volume(self) -> int:
+        """The last volume we requested (0..100).
+
+        Prefer this over ``backend.get_volume()`` for display and persistence:
+        it reflects the user's intent immediately, without libVLC's playback
+        read-back lag.
+        """
+        return self._volume
+
     def set_volume(self, volume: int) -> None:
-        self._backend.set_volume(volume)
-        self.volume_changed.emit(self._backend.get_volume(), self._backend.is_muted())
+        # Trust the value the backend reports it *applied* (clamped), not a
+        # read-back of libVLC's live volume, which lags during playback.
+        applied = self._backend.set_volume(volume)
+        try:
+            self._volume = int(applied)
+        except (TypeError, ValueError):
+            # Backend didn't return a usable number (e.g. a bare mock);
+            # fall back to the requested value, clamped.
+            self._volume = max(0, min(100, int(volume)))
+        self.volume_changed.emit(self._volume, self._backend.is_muted())
 
     def change_volume(self, delta: int) -> None:
-        self.set_volume(self._backend.get_volume() + delta)
+        # Base the delta on our tracked request value, not a live read-back,
+        # so repeated steps during playback don't accumulate from stale values.
+        self.set_volume(self._volume + delta)
 
     def toggle_mute(self) -> None:
         self._backend.set_muted(not self._backend.is_muted())
-        self.volume_changed.emit(self._backend.get_volume(), self._backend.is_muted())
+        self.volume_changed.emit(self._volume, self._backend.is_muted())
 
     # -- playback rate -----------------------------------------------------
 

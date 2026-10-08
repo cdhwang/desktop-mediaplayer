@@ -55,6 +55,16 @@ def test_volume_clamping() -> None:
     backend.release()
 
 
+def test_set_volume_returns_applied_clamped_value() -> None:
+    # set_volume returns the clamped value it applied, so callers don't have
+    # to read it back (which lags during playback).
+    backend = VLCBackend()
+    assert backend.set_volume(70) == 70
+    assert backend.set_volume(150) == 100
+    assert backend.set_volume(-5) == 0
+    backend.release()
+
+
 def test_mute_toggle() -> None:
     backend = VLCBackend()
     backend.set_muted(True)
