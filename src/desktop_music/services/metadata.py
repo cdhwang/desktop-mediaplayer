@@ -14,6 +14,8 @@ from typing import Optional
 import mutagen
 from mutagen.flac import FLAC
 from mutagen.id3 import ID3
+import os
+import pathlib
 
 
 @dataclass
@@ -117,8 +119,20 @@ def _extract_cover(path: str, audio) -> Optional[bytes]:
     embedded = _extract_embedded_cover(audio)
     if embedded is not None:
         return embedded
-    return _extract_sidecar_cover(path)
-
+    current_dir = os.path.dirname(path) or '.'
+    cover = _extract_sidecar_cover(current_dir)
+    if cover:
+        return cover
+    parent = pathlib.Path(current_dir).parent
+    cover = _extract_sidecar_cover(str(parent))
+    if cover:
+        return cover
+    for f in parent.glob('*'):
+        if f.name.lower() == 'artwork':
+            cover = _extract_sidecar_cover(str(f))
+            if cover:
+                return cover
+    return None
 
 def _extract_embedded_cover(audio) -> Optional[bytes]:
     """Return embedded cover art bytes if present."""
@@ -146,7 +160,7 @@ _COVER_NAME_PRIORITY = ("cover", "front", "folder", "album", "albumart")
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp")
 
 
-def _extract_sidecar_cover(path: str) -> Optional[bytes]:
+def _extract_sidecar_cover(directory: str) -> Optional[bytes]:
     """Look for a cover image file next to *path*.
 
     Preference order:
@@ -155,9 +169,7 @@ def _extract_sidecar_cover(path: str) -> Optional[bytes]:
     2. If no such named file exists but the directory contains exactly one
        image file, use that one.
     """
-    import os
 
-    directory = os.path.dirname(path) or "."
     try:
         entries = os.listdir(directory)
     except OSError:
