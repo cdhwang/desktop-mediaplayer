@@ -1,39 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="190 40 300 300" width="512" height="512">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#1c1c22"/>
-      <stop offset="1" stop-color="#0b0b0e"/>
-    </linearGradient>
-    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#f0d868"/>
-      <stop offset="1" stop-color="#d4a81e"/>
-    </linearGradient>
-    <radialGradient id="disc" cx="0.5" cy="0.5" r="0.5">
-      <stop offset="0" stop-color="#2a2a32"/>
-      <stop offset="1" stop-color="#15151a"/>
-    </radialGradient>
+    <clipPath id="clip">
+      <rect x="190" y="40" width="300" height="300" rx="68"/>
+    </clipPath>
   </defs>
-
-  <!-- rounded square background -->
-  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#bg)" stroke="#2a2a30" stroke-width="2"/>
-
-  <!-- subtle disc behind the glyph -->
-  <circle cx="128" cy="128" r="92" fill="url(#disc)"/>
-  <circle cx="128" cy="128" r="92" fill="none" stroke="#2f2f38" stroke-width="2"/>
-
-  <!-- play triangle -->
-  <path d="M104 92 L104 164 L166 128 Z" fill="url(#accent)"/>
-
-  <!-- musical note, overlapping lower-right -->
-  <g fill="url(#accent)">
-    <!-- two stems -->
-    <rect x="148" y="150" width="9" height="54" rx="4"/>
-    <rect x="192" y="138" width="9" height="20" rx="4"/>
-    <!-- beam joining the two stems -->
-    <path d="M148 150 L201 136 L201 152 L148 166 Z"/>
-    <!-- note heads -->
-    <ellipse cx="140" cy="204" rx="17" ry="12" transform="rotate(-20 140 204)"/>
-    <ellipse cx="192" cy="158" rx="16" ry="11" transform="rotate(-20 192 158)"/>
+  <rect x="190" y="40" width="300" height="300" rx="68" fill="#5B3FD9"/>
+  <g clip-path="url(#clip)">
+    <circle cx="440" cy="90" r="90" fill="#7C5CF0"/>
+    <circle cx="240" cy="330" r="80" fill="#4A2FC0"/>
   </g>
+  <path d="M290 112 L420 90 V232 A32 26 0 1 1 400 208 V132 L310 148 V262 A32 26 0 1 1 290 238 Z" fill="#FFFFFF"/>
+  <path d="M215 170 Q205 190 215 210" fill="none" stroke="#C9BCFF" stroke-width="8" stroke-linecap="round"/>
+  <path d="M455 170 Q465 190 455 210" fill="none" stroke="#C9BCFF" stroke-width="8" stroke-linecap="round"/>
+  <path d="M232 145 Q216 190 232 235" fill="none" stroke="#9E86F7" stroke-width="8" stroke-linecap="round"/>
+  <path d="M438 145 Q454 190 438 235" fill="none" stroke="#9E86F7" stroke-width="8" stroke-linecap="round"/>
 </svg>
