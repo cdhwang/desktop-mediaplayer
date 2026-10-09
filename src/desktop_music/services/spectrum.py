@@ -110,7 +110,11 @@ def decode_pcm_mono(path: str, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
         "-",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, check=True)
+        import sys
+        flags = dict(capture_output=True, check=True)
+        if sys.platform == "win32":
+            flags['creationflags'] = subprocess.CREATE_NO_WINDOW
+        result = subprocess.run(cmd, **flags)
     except (subprocess.CalledProcessError, FileNotFoundError, OSError):
         return np.zeros(0, dtype=np.float32)
     return np.frombuffer(result.stdout, dtype=np.float32)

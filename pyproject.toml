@@ -14,8 +14,11 @@ dependencies = [
     "python-vlc>=3.0.21203",
 ]
 
-[project.scripts]
+[project.gui-scripts]
 desktop-music = "desktop_music:main"
+
+[project.scripts]
+desktop-music-cli = "desktop_music:main"
 
 [build-system]
 requires = ["uv_build>=0.12.4,<0.13.0"]
