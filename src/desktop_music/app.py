@@ -42,8 +42,7 @@ def run(argv: list[str] | None = None) -> int:
     app = create_app(argv)
 
     raw_args = argv if argv is not None else sys.argv
-    # QApplication strips recognised Qt options; use its remaining args.
-    remaining = app.arguments()[1:] if len(app.arguments()) > 1 else raw_args[1:]
+    remaining = raw_args[1:] # do not use app.arguments() because it preserves latin characters correctly
     initial_media = [a for a in remaining if not a.startswith("-")]
 
     window = MainWindow(initial_media=initial_media or None)
