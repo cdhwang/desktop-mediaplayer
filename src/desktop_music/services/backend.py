@@ -63,9 +63,17 @@ class VLCBackend:
         args: list[str] = []
         if self._normalize:
             args += [
-                "--audio-filter=normvol",
-                f"--norm-max-level={self._NORM_MAX_LEVEL}",
-                f"--norm-buff-size={self._NORM_BUFF_SIZE}",
+                "--audio-filter=compressor",
+                "--compressor-rms-peak=0.0",
+                "--compressor-attack=25.0",
+                "--compressor-release=350.0",
+                "--compressor-threshold=-26.0",
+                "--compressor-ratio=4.5",
+                "--compressor-makeup-gain=16.0",
+                "--compressor-knee=2.5"
+                # "--audio-filter=normvol",
+                # f"--norm-max-level={self._NORM_MAX_LEVEL}",
+                # f"--norm-buff-size={self._NORM_BUFF_SIZE}",
             ]
         # Instance args select the audio filter chain; video output window is
         # attached later via set_video_window().
