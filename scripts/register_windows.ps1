@@ -1,17 +1,40 @@
 <#
 .SYNOPSIS
-    Register Desktop Music as a handler for its supported media file types
-    on Windows (per-user, no admin rights required).
+    Register Desktop Music (installed via `uv tool install --editable .`) as a
+    handler for its supported media file types on Windows (per-user, no admin
+    rights), with a friendly "Desktop Music" name in the Open-with dialog and
+    the app's own media-file icons in File Explorer.
 
 .DESCRIPTION
-    Writes a ProgID under HKCU:\Software\Classes that launches the app via the
-    project's virtualenv `pythonw.exe` (no console window, no `uv run` cost),
-    then lists the ProgID as an "Open with" candidate for every supported
-    extension. Windows 8+ deliberately prevents apps from silently stealing the
-    *default* association, so after running this you still pick "Desktop Music"
-    once via the Open-with dialog or Settings > Apps > Default apps.
+    This script targets the launcher that `uv tool install` creates
+    (desktop-music.exe). Because that launcher's file name is what the
+    Open-with dialog shows by default, we register an application entry with a
+    FriendlyAppName so the dialog reads "Desktop Music" instead.
+
+    It writes, under HKCU:\Software\Classes:
+      * Applications\desktop-music.exe
+            FriendlyAppName        = "Desktop Music"
+            DefaultIcon            = app_icon.ico
+            shell\open\command     = "<launcher>" "%1"
+        -> this is what makes the Open-with dialog show the friendly name.
+      * DesktopMusic.AudioFile / DesktopMusic.VideoFile ProgIDs
+            each with its own DefaultIcon (file_audio.ico / file_video.ico)
+            and the same open command.
+      * For every supported extension:
+            - OpenWithProgids   += the matching ProgID
+            - OpenWithList      += desktop-music.exe  (friendly-named entry)
+            - DefaultIcon        = our media icon (Explorer icon up front)
+
+    Icon/default caveats:
+      * If an extension already has a per-user "UserChoice" default, Windows
+        honors that association's icon and app. Pick Desktop Music as the
+        default for the type (hint printed at the end) to override it.
+      * Windows 8+ prevents apps from silently stealing the *default*
+        association, so double-click opening still requires choosing Desktop
+        Music once.
 
 .NOTES
+    Prereq:  uv tool install --editable .
     Run from the project root:
         powershell -ExecutionPolicy Bypass -File .\scripts\register_windows.ps1
 
@@ -24,76 +47,160 @@ param(
     # Project root (defaults to the parent of this script's folder).
     [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
 
-    # ProgID: a unique identifier for this application's file class.
-    [string]$ProgId = "DesktopMusic.MediaFile",
+    # ProgIDs for the audio/video classes (carry the per-type icons).
+    [string]$AudioProgId = "DesktopMusic.AudioFile",
+    [string]$VideoProgId = "DesktopMusic.VideoFile",
 
-    [string]$FriendlyName = "Desktop Music"
+    # Friendly name shown in the Open-with dialog and Default Apps.
+    [string]$FriendlyName = "Desktop Music",
+
+    # Explicit path to the uv-installed launcher; auto-detected when omitted.
+    [string]$LauncherPath = ""
 )
 
 $ErrorActionPreference = "Stop"
 
-# --- locate the launcher (virtualenv pythonw.exe) and entry script ----------
-$PythonW = Join-Path $ProjectRoot ".venv\Scripts\pythonw.exe"
-$MainPy  = Join-Path $ProjectRoot "main.py"
-$IconIco = Join-Path $ProjectRoot "src\desktop_music\resources\app_icon.ico"
+$ResDir   = Join-Path $ProjectRoot "src\desktop_music\resources"
+$AudioIco = Join-Path $ResDir "file_audio.ico"
+$VideoIco = Join-Path $ResDir "file_video.ico"
+$AppIco   = Join-Path $ResDir "app_icon.ico"
 
-if (-not (Test-Path $PythonW)) {
-    throw "pythonw.exe not found at '$PythonW'. Create the venv first (e.g. 'uv sync')."
-}
-if (-not (Test-Path $MainPy)) {
-    throw "main.py not found at '$MainPy'. Is -ProjectRoot correct?"
+# --- locate the uv-installed launcher (desktop-music.exe) -------------------
+function Find-Launcher {
+    if ($LauncherPath -and (Test-Path $LauncherPath)) { return $LauncherPath }
+
+    $candidates = @()
+    # 1. Anything already on PATH (uv puts its bin dir there).
+    $cmd = Get-Command "desktop-music" -ErrorAction SilentlyContinue
+    if ($cmd) { $candidates += $cmd.Source }
+    # 2. uv's default tool-bin directory.
+    $candidates += (Join-Path $env:USERPROFILE ".local\bin\desktop-music.exe")
+    if ($env:UV_TOOL_BIN_DIR) {
+        $candidates += (Join-Path $env:UV_TOOL_BIN_DIR "desktop-music.exe")
+    }
+    # 3. uv tools install tree (per-tool venv Scripts dir).
+    $toolsRoot = if ($env:UV_TOOL_DIR) { $env:UV_TOOL_DIR } `
+                 else { Join-Path $env:APPDATA "uv\tools" }
+    $candidates += (Join-Path $toolsRoot "desktop-music\Scripts\desktop-music.exe")
+
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path $c)) { return (Resolve-Path $c).Path }
+    }
+    return $null
 }
 
-# "%1" is substituted by Windows with the double-clicked file path.
-$Command = "`"$PythonW`" `"$MainPy`" `"%1`""
-Write-Host "Launcher command: $Command"
+$Launcher = Find-Launcher
+if (-not $Launcher) {
+    throw ("desktop-music.exe not found. Install it first with " +
+           "'uv tool install --editable .', or pass -LauncherPath '<full path>'.")
+}
+$ExeName = Split-Path $Launcher -Leaf   # e.g. "desktop-music.exe"
+Write-Host "Launcher: $Launcher"
+
+# "%1" is substituted by Windows with the opened file path.
+$Command = "`"$Launcher`" `"%1`""
 
 # --- supported extensions (keep in sync with constants.py) ------------------
-$Extensions = @(
-    # audio
+$AudioExtensions = @(
     ".mp3", ".flac", ".wav", ".ape", ".m4a", ".aac", ".ogg", ".opus",
-    ".wma", ".wv", ".tta", ".alac", ".aiff", ".aif",
-    # video
+    ".wma", ".wv", ".tta", ".alac", ".aiff", ".aif"
+)
+$VideoExtensions = @(
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v",
     ".mpg", ".mpeg"
 )
 
 $ClassesRoot = "HKCU:\Software\Classes"
 
-# --- 1. create the ProgID ---------------------------------------------------
-$progKey = Join-Path $ClassesRoot $ProgId
-New-Item -Path $progKey -Force | Out-Null
-Set-ItemProperty -Path $progKey -Name "(default)" -Value $FriendlyName
+function Resolve-Icon([string]$preferred) {
+    if (Test-Path $preferred) { return $preferred }
+    if (Test-Path $AppIco)    { return $AppIco }
+    return $null
+}
+$AudioIconPath = Resolve-Icon $AudioIco
+$VideoIconPath = Resolve-Icon $VideoIco
+$AppIconPath   = if (Test-Path $AppIco) { $AppIco } else { $null }
 
-# DefaultIcon
-$iconKey = Join-Path $progKey "DefaultIcon"
-New-Item -Path $iconKey -Force | Out-Null
-if (Test-Path $IconIco) {
-    Set-ItemProperty -Path $iconKey -Name "(default)" -Value "`"$IconIco`",0"
+# --- 1. the Application entry that gives the Open-with dialog a nice name ----
+#     HKCU\Software\Classes\Applications\<exe> { FriendlyAppName, DefaultIcon,
+#     shell\open\command }
+$appKey = Join-Path $ClassesRoot ("Applications\" + $ExeName)
+New-Item -Path $appKey -Force | Out-Null
+Set-ItemProperty -Path $appKey -Name "FriendlyAppName" -Value $FriendlyName
+
+$appIconKey = Join-Path $appKey "DefaultIcon"
+New-Item -Path $appIconKey -Force | Out-Null
+if ($AppIconPath) {
+    Set-ItemProperty -Path $appIconKey -Name "(default)" -Value "`"$AppIconPath`",0"
 } else {
-    # fall back to the launcher's own icon
-    Set-ItemProperty -Path $iconKey -Name "(default)" -Value "`"$PythonW`",0"
-    Write-Warning "app_icon.ico not found; using pythonw.exe icon."
+    Set-ItemProperty -Path $appIconKey -Name "(default)" -Value "`"$Launcher`",0"
 }
 
-# shell\open\command
-$cmdKey = Join-Path $progKey "shell\open\command"
-New-Item -Path $cmdKey -Force | Out-Null
-Set-ItemProperty -Path $cmdKey -Name "(default)" -Value $Command
+$appCmdKey = Join-Path $appKey "shell\open\command"
+New-Item -Path $appCmdKey -Force | Out-Null
+Set-ItemProperty -Path $appCmdKey -Name "(default)" -Value $Command
 
-Write-Host "Created ProgID '$ProgId'."
+# Advertise which extensions this application supports (used by the dialog).
+$appTypesKey = Join-Path $appKey "SupportedTypes"
+New-Item -Path $appTypesKey -Force | Out-Null
+foreach ($ext in ($AudioExtensions + $VideoExtensions)) {
+    Set-ItemProperty -Path $appTypesKey -Name $ext -Value ""
+}
+Write-Host "Registered application '$ExeName' as '$FriendlyName'."
 
-# --- 2. register ProgID as an Open-With candidate for each extension ---------
-foreach ($ext in $Extensions) {
-    $extKey = Join-Path $ClassesRoot ($ext + "\OpenWithProgids")
-    New-Item -Path $extKey -Force | Out-Null
-    # empty REG_NONE value is the documented convention here
-    New-ItemProperty -Path $extKey -Name $ProgId -PropertyType None `
+# --- helper: create one media ProgID (friendly name, per-type icon, command) -
+function New-MediaProgId([string]$progId, [string]$label, [string]$iconPath) {
+    $progKey = Join-Path $ClassesRoot $progId
+    New-Item -Path $progKey -Force | Out-Null
+    Set-ItemProperty -Path $progKey -Name "(default)" -Value $label
+
+    $iconKey = Join-Path $progKey "DefaultIcon"
+    New-Item -Path $iconKey -Force | Out-Null
+    if ($iconPath) {
+        Set-ItemProperty -Path $iconKey -Name "(default)" -Value "`"$iconPath`",0"
+    } else {
+        Set-ItemProperty -Path $iconKey -Name "(default)" -Value "`"$Launcher`",0"
+        Write-Warning "No .ico found for $progId; using launcher icon."
+    }
+
+    $cmdKey = Join-Path $progKey "shell\open\command"
+    New-Item -Path $cmdKey -Force | Out-Null
+    Set-ItemProperty -Path $cmdKey -Name "(default)" -Value $Command
+}
+
+# --- helper: wire one extension (OpenWithProgids + OpenWithList + icon) ------
+function Register-Extension([string]$ext, [string]$progId, [string]$iconPath) {
+    # a) ProgID candidate (drives the per-type DefaultIcon once chosen).
+    $owpKey = Join-Path $ClassesRoot ($ext + "\OpenWithProgids")
+    New-Item -Path $owpKey -Force | Out-Null
+    New-ItemProperty -Path $owpKey -Name $progId -PropertyType None `
         -Value ([byte[]]@()) -Force | Out-Null
-}
-Write-Host ("Registered as 'Open with' candidate for {0} extensions." -f $Extensions.Count)
 
-# --- 3. notify the shell so changes take effect without a reboot ------------
+    # b) Application candidate so the dialog lists the friendly-named launcher.
+    $owlKey = Join-Path $ClassesRoot ($ext + "\OpenWithList")
+    New-Item -Path $owlKey -Force | Out-Null
+    Set-ItemProperty -Path $owlKey -Name $ExeName -Value ""
+
+    # c) Per-extension DefaultIcon so Explorer shows our icon up front
+    #    (unless a UserChoice default overrides the type).
+    if ($iconPath) {
+        $extIconKey = Join-Path $ClassesRoot ($ext + "\DefaultIcon")
+        New-Item -Path $extIconKey -Force | Out-Null
+        Set-ItemProperty -Path $extIconKey -Name "(default)" -Value "`"$iconPath`",0"
+    }
+}
+
+# --- 2. create the media ProgIDs --------------------------------------------
+New-MediaProgId $AudioProgId $FriendlyName $AudioIconPath
+New-MediaProgId $VideoProgId $FriendlyName $VideoIconPath
+
+# --- 3. register each extension ---------------------------------------------
+foreach ($ext in $AudioExtensions) { Register-Extension $ext $AudioProgId $AudioIconPath }
+foreach ($ext in $VideoExtensions) { Register-Extension $ext $VideoProgId $VideoIconPath }
+Write-Host ("Registered {0} audio + {1} video extensions." -f `
+    $AudioExtensions.Count, $VideoExtensions.Count)
+
+# --- 4. notify the shell so changes take effect without a reboot ------------
 $sig = @'
 [System.Runtime.InteropServices.DllImport("shell32.dll")]
 public static extern void SHChangeNotify(int eventId, int flags, System.IntPtr item1, System.IntPtr item2);
@@ -103,6 +210,11 @@ $shell = Add-Type -MemberDefinition $sig -Name "ShellNotify" -Namespace "Win32" 
 $shell::SHChangeNotify(0x08000000, 0x0000, [System.IntPtr]::Zero, [System.IntPtr]::Zero)
 
 Write-Host ""
-Write-Host "Done. To make Desktop Music the DEFAULT for a type:" -ForegroundColor Green
-Write-Host "  - Right-click a media file > Open with > Choose another app > Desktop Music > Always"
-Write-Host "  - or Settings > Apps > Default apps > choose by file type"
+Write-Host "Done. The Open-with dialog should now show '$FriendlyName'" -ForegroundColor Green
+Write-Host "(instead of '$ExeName'), and Explorer should show the media icons." -ForegroundColor Green
+Write-Host ""
+Write-Host "To open on double-click, set '$FriendlyName' as the default for a type:" -ForegroundColor Green
+Write-Host "  - Right-click a media file > Open with > Choose another app > $FriendlyName > Always"
+Write-Host "  - or Settings > Apps > Default apps"
+Write-Host ""
+Write-Host "If an icon/name doesn't refresh, log off/on or restart Explorer." -ForegroundColor DarkGray

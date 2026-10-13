@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- File-type icon for AUDIO media associated with Desktop Music.
+     A document sheet with a folded corner and a music note, in the app's
+     purple palette. Rendered to a multi-resolution .ico by render_icon.py
+     and referenced by the Windows registration script's DefaultIcon. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="sheet" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#ECE7FB"/>
+    </linearGradient>
+  </defs>
+  <!-- document body with folded top-right corner -->
+  <path d="M56 24 h100 l44 44 v164 a8 8 0 0 1 -8 8 H56 a8 8 0 0 1 -8 -8 V32 a8 8 0 0 1 8 -8 Z"
+        fill="url(#sheet)" stroke="#5B3FD9" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M156 24 v36 a8 8 0 0 0 8 8 h36 Z" fill="#C9BCFF" stroke="#5B3FD9"
+        stroke-width="6" stroke-linejoin="round"/>
+  <!-- music note -->
+  <path d="M150 108 L108 118 V176 A20 16 0 1 1 96 161 V134 L150 123 V162 A20 16 0 1 1 138 147 Z"
+        fill="#5B3FD9"/>
+</svg>

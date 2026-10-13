@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
-    Undo register_windows.ps1: remove the Desktop Music ProgID and its
-    "Open with" candidate entries (per-user).
+    Undo register_windows.ps1: remove the Desktop Music application entry,
+    audio/video ProgIDs, their Open-with candidate entries (OpenWithProgids
+    and OpenWithList), and the per-extension DefaultIcon values (per-user).
 
 .NOTES
     Run from the project root:
@@ -10,42 +11,82 @@
 
 [CmdletBinding()]
 param(
-    [string]$ProgId = "DesktopMusic.MediaFile"
+    [string]$AudioProgId = "DesktopMusic.AudioFile",
+    [string]$VideoProgId = "DesktopMusic.VideoFile",
+    # Legacy single ProgID from older versions of the register script.
+    [string]$LegacyProgId = "DesktopMusic.MediaFile",
+    # Launcher exe name used for the Applications\ entry + OpenWithList.
+    [string]$ExeName = "desktop-music.exe"
 )
 
 $ErrorActionPreference = "Stop"
 
-$Extensions = @(
+$AudioExtensions = @(
     ".mp3", ".flac", ".wav", ".ape", ".m4a", ".aac", ".ogg", ".opus",
-    ".wma", ".wv", ".tta", ".alac", ".aiff", ".aif",
+    ".wma", ".wv", ".tta", ".alac", ".aiff", ".aif"
+)
+$VideoExtensions = @(
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v",
     ".mpg", ".mpeg"
 )
+$AllExtensions = $AudioExtensions + $VideoExtensions
 
 $ClassesRoot = "HKCU:\Software\Classes"
 
-# 1. remove the ProgID key
-$progKey = Join-Path $ClassesRoot $ProgId
-if (Test-Path $progKey) {
-    Remove-Item -Path $progKey -Recurse -Force
-    Write-Host "Removed ProgID '$ProgId'."
+# --- 1. remove the Application entry ----------------------------------------
+$appKey = Join-Path $ClassesRoot ("Applications\" + $ExeName)
+if (Test-Path $appKey) {
+    Remove-Item -Path $appKey -Recurse -Force
+    Write-Host "Removed application entry '$ExeName'."
 } else {
-    Write-Host "ProgID '$ProgId' not present."
+    Write-Host "Application entry '$ExeName' not present."
 }
 
-# 2. remove the OpenWithProgids candidate value from each extension
-foreach ($ext in $Extensions) {
-    $owKey = Join-Path $ClassesRoot ($ext + "\OpenWithProgids")
-    if (Test-Path $owKey) {
-        $prop = Get-ItemProperty -Path $owKey -Name $ProgId -ErrorAction SilentlyContinue
-        if ($null -ne $prop) {
-            Remove-ItemProperty -Path $owKey -Name $ProgId -ErrorAction SilentlyContinue
-            Write-Host "Cleared candidate for $ext"
-        }
+# --- 2. remove the ProgID keys ----------------------------------------------
+foreach ($progId in @($AudioProgId, $VideoProgId, $LegacyProgId)) {
+    $progKey = Join-Path $ClassesRoot $progId
+    if (Test-Path $progKey) {
+        Remove-Item -Path $progKey -Recurse -Force
+        Write-Host "Removed ProgID '$progId'."
+    } else {
+        Write-Host "ProgID '$progId' not present."
     }
 }
 
-# 3. refresh the shell
+# --- 3. clean each extension ------------------------------------------------
+$ProgIds = @($AudioProgId, $VideoProgId, $LegacyProgId)
+foreach ($ext in $AllExtensions) {
+    # 3a. remove our ProgIDs from the OpenWithProgids candidate list
+    $owpKey = Join-Path $ClassesRoot ($ext + "\OpenWithProgids")
+    if (Test-Path $owpKey) {
+        foreach ($progId in $ProgIds) {
+            $prop = Get-ItemProperty -Path $owpKey -Name $progId -ErrorAction SilentlyContinue
+            if ($null -ne $prop) {
+                Remove-ItemProperty -Path $owpKey -Name $progId -ErrorAction SilentlyContinue
+                Write-Host "Cleared Open-with ProgID '$progId' for $ext"
+            }
+        }
+    }
+
+    # 3b. remove our launcher from the OpenWithList
+    $owlKey = Join-Path $ClassesRoot ($ext + "\OpenWithList")
+    if (Test-Path $owlKey) {
+        $prop = Get-ItemProperty -Path $owlKey -Name $ExeName -ErrorAction SilentlyContinue
+        if ($null -ne $prop) {
+            Remove-ItemProperty -Path $owlKey -Name $ExeName -ErrorAction SilentlyContinue
+            Write-Host "Cleared Open-with list entry '$ExeName' for $ext"
+        }
+    }
+
+    # 3c. remove the per-extension DefaultIcon we added
+    $extIconKey = Join-Path $ClassesRoot ($ext + "\DefaultIcon")
+    if (Test-Path $extIconKey) {
+        Remove-Item -Path $extIconKey -Recurse -Force
+        Write-Host "Removed DefaultIcon for $ext"
+    }
+}
+
+# --- 4. refresh the shell ---------------------------------------------------
 $sig = @'
 [System.Runtime.InteropServices.DllImport("shell32.dll")]
 public static extern void SHChangeNotify(int eventId, int flags, System.IntPtr item1, System.IntPtr item2);
