@@ -35,6 +35,28 @@ def load_app_icon():
         icon.addFile(APP_ICON_PATH)
     return icon
 
+
+# Taskbar overlay badges, keyed by playback state. Rendered at 16/32 px by
+# ``resources/render_icon.py``. Windows composites these onto the lower-right
+# corner of the base taskbar icon via ITaskbarList3::SetOverlayIcon.
+_OVERLAY_SIZES = (16, 32)
+
+
+def load_overlay_icon(name: str):
+    """Return a QIcon for the named taskbar overlay badge, or an empty one.
+
+    *name* is ``"play"`` or ``"pause"``. Imported lazily to keep this module
+    free of a hard Qt dependency for non-GUI consumers (e.g. unit tests).
+    """
+    from PyQt6.QtGui import QIcon
+
+    icon = QIcon()
+    for size in _OVERLAY_SIZES:
+        path = os.path.join(RESOURCES_DIR, f"overlay_{name}_{size}.png")
+        if os.path.exists(path):
+            icon.addFile(path)
+    return icon
+
 # Supported media extensions (lowercase, with leading dot).
 # libVLC decodes a wide range of formats; include common lossless/lossy
 # audio containers (e.g. Monkey's Audio ``.ape``, often referenced by cue

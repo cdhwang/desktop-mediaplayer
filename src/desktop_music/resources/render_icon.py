@@ -19,9 +19,14 @@ _HERE = pathlib.Path(__file__).resolve().parent
 _SVG = _HERE / "app_icon.svg"
 _SIZES = (16, 32, 48, 64, 128, 256)
 
+# Taskbar overlay badges (play/pause). Windows wants a 16x16 overlay at 96 dpi;
+# we also render 32px for high-DPI taskbars.
+_OVERLAY_SVGS = ("overlay_play", "overlay_pause")
+_OVERLAY_SIZES = (16, 32)
 
-def _render(size: int) -> QImage:
-    renderer = QSvgRenderer(str(_SVG))
+
+def _render(svg_path: pathlib.Path, size: int) -> QImage:
+    renderer = QSvgRenderer(str(svg_path))
     image = QImage(QSize(size, size), QImage.Format.Format_ARGB32)
     image.fill(Qt.GlobalColor.transparent)
     painter = QPainter(image)
@@ -37,7 +42,7 @@ def main() -> int:
 
     images: list[QImage] = []
     for size in _SIZES:
-        img = _render(size)
+        img = _render(_SVG, size)
         out = _HERE / f"app_icon_{size}.png"
         img.save(str(out), "PNG")
         images.append(img)
@@ -47,6 +52,16 @@ def main() -> int:
     primary = _HERE / "app_icon.png"
     images[-1].save(str(primary), "PNG")
     print(f"wrote {primary.name}")
+
+    # Overlay badges.
+    for name in _OVERLAY_SVGS:
+        svg = _HERE / f"{name}.svg"
+        for size in _OVERLAY_SIZES:
+            img = _render(svg, size)
+            out = _HERE / f"{name}_{size}.png"
+            img.save(str(out), "PNG")
+            print(f"wrote {out.name}")
+
     return 0
 
 

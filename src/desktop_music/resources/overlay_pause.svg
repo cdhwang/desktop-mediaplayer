@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Taskbar overlay badge: "paused" state. A small circular badge with two
+     pause bars, meant to be composited by Windows onto the lower-right
+     corner of the base application icon. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <circle cx="16" cy="16" r="14" fill="#616161" stroke="#FFFFFF" stroke-width="2"/>
+  <rect x="11" y="10" width="4" height="12" rx="1" fill="#FFFFFF"/>
+  <rect x="17" y="10" width="4" height="12" rx="1" fill="#FFFFFF"/>
+</svg>

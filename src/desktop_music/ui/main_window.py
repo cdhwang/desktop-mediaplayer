@@ -18,7 +18,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from desktop_music.constants import APP_NAME, MEDIA_EXTENSIONS, is_media, load_app_icon
+from desktop_music.constants import (
+    APP_NAME,
+    MEDIA_EXTENSIONS,
+    is_media,
+    load_app_icon,
+    load_overlay_icon,
+)
 from desktop_music.core.controller import PlayerController, VOLUME_STEP
 from desktop_music.core.playlist import PlaylistModel, scan_dir_flat
 from desktop_music.core.shortcuts import ShortcutManager
@@ -27,6 +33,7 @@ from desktop_music.services.equalizer import PRESET_NONE, EqualizerService
 from desktop_music.services.lyrics import read_lyrics
 from desktop_music.services.metadata import read_metadata
 from desktop_music.services.settings import SettingsStore
+from desktop_music.services.taskbar import TaskbarOverlay
 from desktop_music.ui.central_display import CentralDisplay
 from desktop_music.ui.control_bar import ControlBar
 from desktop_music.ui.playlist_panel import PlaylistPanel
@@ -65,6 +72,12 @@ class MainWindow(QMainWindow):
         # programmatic volume/rate changes on launch don't flash the overlay.
         self._osd_ready = False
         self._shortcuts = ShortcutManager(self, self.dispatch_command)
+
+        # Windows taskbar overlay badge reflecting play/pause state. No-op on
+        # other platforms. Icons are loaded lazily on first state change.
+        self._taskbar = TaskbarOverlay()
+        self._overlay_icons: dict[PlaybackState, object] = {}
+        self._last_overlay_state: PlaybackState | None = None
 
         self._build_ui()
         self._connect()
@@ -475,6 +488,43 @@ class MainWindow(QMainWindow):
 
     def _on_state_changed(self, state: PlaybackState) -> None:
         self._control_bar.set_playing(state == PlaybackState.PLAYING)
+        self._update_taskbar_overlay(state)
+
+    def _update_taskbar_overlay(self, state: PlaybackState) -> None:
+        """Reflect playback state as a taskbar button overlay badge.
+
+        Shows a play badge while PLAYING, a pause badge while PAUSED, and no
+        overlay for every other (idle/stopped/ended) state. No-op off Windows.
+        """
+        if state == self._last_overlay_state:
+            return
+        self._last_overlay_state = state
+        if state == PlaybackState.PLAYING:
+            self._taskbar.set_overlay(self._overlay_icon("play"), "Playing")
+        elif state == PlaybackState.PAUSED:
+            self._taskbar.set_overlay(self._overlay_icon("pause"), "Paused")
+        else:
+            self._taskbar.clear()
+
+    def _overlay_icon(self, name: str):
+        """Return (and cache) the overlay QIcon for *name* ("play"/"pause")."""
+        key = name
+        icon = self._overlay_icons.get(key)
+        if icon is None:
+            icon = load_overlay_icon(name)
+            self._overlay_icons[key] = icon
+        return icon
+
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().showEvent(event)
+        # The native window handle only exists once the window is shown; bind
+        # the taskbar helper here and reflect the current state immediately.
+        self._taskbar.set_window(self.winId())
+        state = getattr(self._controller, "state", None)
+        if state is not None:
+            # Force a refresh regardless of the dedupe cache.
+            self._last_overlay_state = None
+            self._update_taskbar_overlay(state)
 
     def _on_position_changed(self, position_ms: int, length_ms: int) -> None:
         self._central_display.spectrum.set_position(position_ms)

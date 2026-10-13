@@ -8,6 +8,10 @@ from PyQt6.QtWidgets import QApplication
 
 from desktop_music.constants import APP_NAME, ORG_NAME, load_app_icon
 
+# Stable AppUserModelID so Windows groups the taskbar button under our own
+# identity (required for the play/pause taskbar overlay to attach correctly).
+_APP_USER_MODEL_ID = "desktop-music.DesktopMusic.Player.1"
+
 
 def create_app(argv: list[str] | None = None) -> QApplication:
     """Create (or reuse) the QApplication instance.
@@ -15,6 +19,11 @@ def create_app(argv: list[str] | None = None) -> QApplication:
     Reusing an existing instance keeps pytest-qt happy, since only one
     QApplication may exist per process.
     """
+    # Must run before the first window is created so the taskbar picks it up.
+    from desktop_music.services.taskbar import set_app_user_model_id
+
+    set_app_user_model_id(_APP_USER_MODEL_ID)
+
     app = QApplication.instance()
     if app is None:
         app = QApplication(argv if argv is not None else sys.argv)
