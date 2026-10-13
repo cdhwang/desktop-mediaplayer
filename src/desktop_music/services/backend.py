@@ -88,6 +88,8 @@ class VLCBackend:
         # attached later via set_video_window().
         self._instance: vlc.Instance = vlc.Instance(*args)
         self._player: vlc.MediaPlayer = self._instance.media_player_new()
+        self._player.video_set_key_input(False)
+        self._player.video_set_mouse_input(False)
         self._current_path: Optional[str] = None
 
     @property
