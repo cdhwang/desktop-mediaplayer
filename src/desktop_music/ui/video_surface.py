@@ -1,9 +1,9 @@
 """Video surface widget.
 
 A bare native widget that libVLC renders video into. On Linux the window
-id (``winId``) is handed to ``MediaPlayer.set_xwindow``. The widget paints
-its background black so letterboxing looks clean, and forwards
-double-clicks for fullscreen toggling.
+id (``winId``) is handed to ``MediaPlayer.set_xwindow`` (``set_hwnd`` on
+Windows). The widget paints its background black so letterboxing looks
+clean, and forwards double-clicks for play/pause toggling.
 """
 
 from __future__ import annotations

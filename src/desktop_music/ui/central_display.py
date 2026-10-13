@@ -171,7 +171,7 @@ class CentralDisplay(WindowDragMixin, QStackedWidget):
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 (Qt override)
         # Double-clicking the audio playback area (album art / spectrum /
         # lyrics) toggles play/pause. The video page uses its own surface,
-        # whose double-click is wired to fullscreen instead.
+        # whose double-click is wired to play/pause as well.
         self.double_clicked.emit()
         event.accept()
 

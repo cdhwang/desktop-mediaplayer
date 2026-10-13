@@ -95,6 +95,12 @@ def test_video_surface_double_click_signal(qtbot) -> None:
         surface.double_clicked.emit()
 
 
+def test_video_surface_double_click_toggles_play_pause(qtbot, tmp_path) -> None:
+    window, backend = _window_with_mock_backend(qtbot, tmp_path)
+    window._central_display.video.double_clicked.emit()
+    backend.toggle_pause.assert_called_once()
+
+
 def test_central_display_has_video_page(qtbot) -> None:
     display = CentralDisplay()
     qtbot.addWidget(display)

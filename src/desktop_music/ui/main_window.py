@@ -385,7 +385,10 @@ class MainWindow(QMainWindow):
         panel.add_folder_requested.connect(self._open_folder_dialog)
         self._playlist.current_changed.connect(panel.highlight_current)
 
-        self._central_display.video.double_clicked.connect(self.toggle_fullscreen)
+        # Double-clicking the video surface toggles play/pause, matching the
+        # behaviour of the audio playback pages. Fullscreen remains reachable
+        # via the shortcut, the menu, and the control-bar button.
+        self._central_display.video.double_clicked.connect(ctrl.toggle_pause)
         self._central_display.double_clicked.connect(ctrl.toggle_pause)
         self._central_display.context_menu_requested.connect(self._show_context_menu)
         self._central_display.paths_dropped.connect(self._on_paths_dropped_play)
