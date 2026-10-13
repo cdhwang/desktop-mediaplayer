@@ -31,12 +31,41 @@ def test_media_type_detection() -> None:
 
 
 def test_backend_set_video_window_calls_xwindow() -> None:
+    from desktop_music.services import backend as backend_mod
     from desktop_music.services.backend import VLCBackend
 
     backend = VLCBackend()
     backend._player = MagicMock()
-    backend.set_video_window(12345)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(backend_mod.sys, "platform", "linux")
+        backend.set_video_window(12345)
     backend._player.set_xwindow.assert_called_once_with(12345)
+
+
+def test_backend_set_video_window_calls_hwnd_on_windows() -> None:
+    from desktop_music.services import backend as backend_mod
+    from desktop_music.services.backend import VLCBackend
+
+    backend = VLCBackend()
+    backend._player = MagicMock()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(backend_mod.sys, "platform", "win32")
+        backend.set_video_window(12345)
+    backend._player.set_hwnd.assert_called_once_with(12345)
+    backend._player.set_xwindow.assert_not_called()
+
+
+def test_backend_set_video_window_calls_nsobject_on_macos() -> None:
+    from desktop_music.services import backend as backend_mod
+    from desktop_music.services.backend import VLCBackend
+
+    backend = VLCBackend()
+    backend._player = MagicMock()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(backend_mod.sys, "platform", "darwin")
+        backend.set_video_window(12345)
+    backend._player.set_nsobject.assert_called_once_with(12345)
+    backend._player.set_xwindow.assert_not_called()
 
 
 def test_backend_has_video() -> None:

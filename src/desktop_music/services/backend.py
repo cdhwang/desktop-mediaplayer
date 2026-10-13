@@ -8,6 +8,7 @@ tested in isolation and mocked easily by higher layers. The UI-facing
 from __future__ import annotations
 
 import enum
+import sys
 from typing import Optional
 
 import vlc
@@ -184,11 +185,19 @@ class VLCBackend:
     def set_video_window(self, window_id: int) -> None:
         """Embed video output into a native window handle.
 
-        Platform-specific: X11 uses ``set_xwindow``; Windows/macOS would use
-        ``set_hwnd``/``set_nsobject``. This app targets Linux.
+        Platform-specific: X11 uses ``set_xwindow``, Windows uses
+        ``set_hwnd``, and macOS uses ``set_nsobject``. Without the correct
+        call, libVLC opens its own top-level window instead of rendering
+        into the embedded surface.
         """
         try:
-            self._player.set_xwindow(int(window_id))
+            handle = int(window_id)
+            if sys.platform.startswith("win"):
+                self._player.set_hwnd(handle)
+            elif sys.platform == "darwin":
+                self._player.set_nsobject(handle)
+            else:
+                self._player.set_xwindow(handle)
         except Exception:
             pass
 
