@@ -95,6 +95,35 @@ def test_video_surface_double_click_signal(qtbot) -> None:
         surface.double_clicked.emit()
 
 
+def test_video_surface_overlay_double_click_emits_signal(qtbot) -> None:
+    """A real double-click on the mouse overlay must emit double_clicked.
+
+    This guards the regression where libVLC's video child window swallowed
+    mouse events: the transparent overlay sits above the video host and
+    turns the double-click into our signal.
+    """
+    from PyQt6.QtCore import QEvent, QPointF, Qt
+    from PyQt6.QtGui import QMouseEvent
+    from PyQt6.QtWidgets import QApplication
+
+    surface = VideoSurface()
+    qtbot.addWidget(surface)
+    surface.resize(400, 300)
+    surface.show()
+    qtbot.waitExposed(surface)
+
+    pos = QPointF(100.0, 80.0)
+    dbl = QMouseEvent(
+        QEvent.Type.MouseButtonDblClick,
+        pos,
+        Qt.MouseButton.LeftButton,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    with qtbot.waitSignal(surface.double_clicked):
+        QApplication.sendEvent(surface._overlay, dbl)
+
+
 def test_video_surface_double_click_toggles_play_pause(qtbot, tmp_path) -> None:
     window, backend = _window_with_mock_backend(qtbot, tmp_path)
     window._central_display.video.double_clicked.emit()
