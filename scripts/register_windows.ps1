@@ -44,8 +44,9 @@
 
 [CmdletBinding()]
 param(
-    # Project root (defaults to the parent of this script's folder).
-    [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
+    # Project root (resolved below so it works even when $PSScriptRoot is
+    # empty, e.g. the script dot-sourced or piped into a console).
+    [string]$ProjectRoot,
 
     # ProgIDs for the audio/video classes (carry the per-type icons).
     [string]$AudioProgId = "DesktopMusic.AudioFile",
@@ -59,6 +60,21 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Resolve the project root with graceful fallbacks:
+#   $PSScriptRoot -> $MyInvocation.MyCommand.Path -> current directory.
+if (-not $ProjectRoot) {
+    $scriptDir = $PSScriptRoot
+    if (-not $scriptDir -and $MyInvocation.MyCommand.Path) {
+        $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    }
+    if ($scriptDir) {
+        $ProjectRoot = Split-Path -Parent $scriptDir
+    } else {
+        $ProjectRoot = (Get-Location).Path
+    }
+}
+Write-Host "ProjectRoot: $ProjectRoot"
 
 $ResDir   = Join-Path $ProjectRoot "src\desktop_music\resources"
 $AudioIco = Join-Path $ResDir "file_audio.ico"
