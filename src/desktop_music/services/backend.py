@@ -60,7 +60,16 @@ class VLCBackend:
 
     def __init__(self, normalize: bool = False) -> None:
         self._normalize = bool(normalize)
-        args: list[str] = []
+        # When libVLC renders into an embedded native window it normally
+        # creates its own video child window that *steals* mouse and keyboard
+        # events, so Qt never sees double-clicks / wheel / right-clicks over
+        # the video surface. Disabling libVLC's own input handling lets those
+        # events propagate up to our VideoSurface widget (double-click =
+        # play/pause, wheel = volume, right-click = menu).
+        args: list[str] = [
+            "--no-mouse-events",
+            "--no-keyboard-events",
+        ]
         if self._normalize:
             args += [
                 "--audio-filter=compressor",
@@ -77,7 +86,7 @@ class VLCBackend:
             ]
         # Instance args select the audio filter chain; video output window is
         # attached later via set_video_window().
-        self._instance: vlc.Instance = vlc.Instance(*args) if args else vlc.Instance()
+        self._instance: vlc.Instance = vlc.Instance(*args)
         self._player: vlc.MediaPlayer = self._instance.media_player_new()
         self._current_path: Optional[str] = None
 
