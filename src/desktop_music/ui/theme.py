@@ -66,7 +66,12 @@ QPushButton#iconButton:hover {{
     border-radius: 3px;
 }}
 QPushButton#iconButton:checked {{
-    color: {_ACCENT};
+    background-color: {_ACCENT};
+    color: #000000;
+    border-radius: 3px;
+}}
+QPushButton#iconButton:checked:hover {{
+    background-color: {_ACCENT};
 }}
 
 /* ---- generic buttons ---- */
