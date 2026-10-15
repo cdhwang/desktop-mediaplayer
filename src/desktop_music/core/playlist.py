@@ -205,14 +205,26 @@ class PlaylistModel(QAbstractListModel):
         from desktop_music.services.cue import is_cue, parse_cue_tracks
 
         collected: list[Track] = []
+        # Cache backing-file total durations so a cue with many tracks probes
+        # each physical file at most once.
+        file_duration_cache: dict[str, int] = {}
         for p in paths:
             if os.path.isdir(p):
                 collected.extend(Track(path=f) for f in _scan_dir(p))
             elif is_cue(p):
                 for ct in parse_cue_tracks(p):
-                    duration = (
-                        ct.end_ms - ct.start_ms if ct.end_ms > ct.start_ms else 0
-                    )
+                    if ct.end_ms > ct.start_ms:
+                        duration = ct.end_ms - ct.start_ms
+                    else:
+                        # Last track of a backing file (end_ms == 0 -> plays to
+                        # EOF). Its length isn't known from the cue sheet alone,
+                        # so derive it from the file's total duration minus this
+                        # track's start offset. Without this the final item
+                        # shows a blank duration in the playlist.
+                        total = PlaylistModel._file_duration_ms(
+                            ct.path, file_duration_cache
+                        )
+                        duration = max(0, total - ct.start_ms) if total else 0
                     collected.append(
                         Track(
                             path=ct.path,
@@ -226,6 +238,25 @@ class PlaylistModel(QAbstractListModel):
             elif is_media(p):
                 collected.append(Track(path=p))
         return collected
+
+    @staticmethod
+    def _file_duration_ms(path: str, cache: dict[str, int]) -> int:
+        """Return a backing file's total duration in ms (best-effort, cached).
+
+        Returns 0 when the duration can't be determined (unreadable file,
+        missing mutagen info); callers treat 0 as "unknown".
+        """
+        if path in cache:
+            return cache[path]
+        duration = 0
+        try:
+            from desktop_music.services.metadata import read_metadata
+
+            duration = int(read_metadata(path).duration_ms) or 0
+        except Exception:
+            duration = 0
+        cache[path] = duration
+        return duration
 
     @staticmethod
     def _collect_paths(paths: list[str]) -> list[str]:

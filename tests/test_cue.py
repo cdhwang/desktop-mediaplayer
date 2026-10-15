@@ -76,6 +76,68 @@ def test_parse_cue_stem_fallback_on_extension_mismatch(tmp_path) -> None:
 # -- playlist integration --------------------------------------------------
 
 
+def test_cue_last_track_duration_derived_from_file_length(tmp_path, monkeypatch) -> None:
+    """The final cue track (end_ms == 0, plays to EOF) should still show a
+    duration, derived from the backing file's total length minus its start.
+
+    Reproduces the bug where only the last playlist item had a blank
+    duration right after adding a cue sheet.
+    """
+    import desktop_music.services.metadata as metadata
+    from desktop_music.services.metadata import Metadata
+
+    ape = _write(tmp_path / "Album.ape")
+    cue = tmp_path / "Album.cue"
+    cue.write_text(
+        'TITLE "The Album"\n'
+        'FILE "Album.ape" WAVE\n'
+        '  TRACK 01 AUDIO\n'
+        '    TITLE "Opener"\n'
+        '    INDEX 01 00:00:00\n'
+        '  TRACK 02 AUDIO\n'
+        '    TITLE "Closer"\n'
+        '    INDEX 01 03:00:00\n'   # starts at 180_000 ms
+    )
+
+    # The dummy .ape has no real audio; fake a 300s total duration.
+    def fake_read_metadata(path: str) -> Metadata:
+        return Metadata(duration_ms=300_000)
+
+    monkeypatch.setattr(metadata, "read_metadata", fake_read_metadata)
+
+    m = PlaylistModel()
+    added = m.add_paths([str(cue)])
+    assert added == 2
+    first, last = m.tracks
+
+    # First track: bounded by the next track's start.
+    assert first.duration_ms == 180_000
+    # Last track: 300_000 (file total) - 180_000 (its start) = 120_000.
+    assert last.end_ms == 0
+    assert last.duration_ms == 120_000
+
+
+def test_cue_last_track_duration_unknown_when_file_unreadable(tmp_path, monkeypatch) -> None:
+    """When the backing file's length can't be read, the last track's
+    duration stays 0 (unknown) rather than raising."""
+    import desktop_music.services.metadata as metadata
+    from desktop_music.services.metadata import Metadata
+
+    _write(tmp_path / "Album.ape")
+    cue = tmp_path / "Album.cue"
+    cue.write_text(
+        'FILE "Album.ape" WAVE\n'
+        '  TRACK 01 AUDIO\n'
+        '    INDEX 01 00:00:00\n'
+    )
+
+    monkeypatch.setattr(metadata, "read_metadata", lambda path: Metadata(duration_ms=0))
+
+    m = PlaylistModel()
+    m.add_paths([str(cue)])
+    assert m.tracks[-1].duration_ms == 0
+
+
 def test_adding_cue_expands_and_excludes_cue_itself(tmp_path) -> None:
     flac, wav, cue = _make_album(tmp_path)
     m = PlaylistModel()
