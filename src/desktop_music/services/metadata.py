@@ -127,6 +127,11 @@ def _extract_cover(path: str, audio) -> Optional[bytes]:
     cover = _extract_sidecar_cover(str(parent))
     if cover:
         return cover
+    for f in pathlib.Path(current_dir).glob('*'):
+        if f.name.lower() == 'artwork':
+            cover = _extract_sidecar_cover(str(f))
+            if cover:
+                return cover
     for f in parent.glob('*'):
         if f.name.lower() == 'artwork':
             cover = _extract_sidecar_cover(str(f))
