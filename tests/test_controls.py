@@ -158,3 +158,85 @@ def test_main_window_wires_control_bar(qtbot) -> None:
     # clicking play in the bar should reach the backend
     window._control_bar._play_btn.click()
     backend.toggle_pause.assert_called_once()
+
+
+# -- repeat radio controls -------------------------------------------------
+
+
+def _make_window(qtbot, tmp_path) -> MainWindow:
+    from desktop_music.services.settings import SettingsStore
+
+    backend = MagicMock()
+    backend.get_state.return_value = PlaybackState.IDLE
+    backend.get_time.return_value = 0
+    backend.get_length.return_value = 0
+    backend.get_volume.return_value = 80
+    backend.is_muted.return_value = False
+    controller = PlayerController(backend=backend)
+    controller._timer.stop()
+    # Isolate persistence so tests never read/write the real state.json.
+    settings = SettingsStore(path=str(tmp_path / "state.json"))
+    window = MainWindow(controller=controller, settings=settings)
+    qtbot.addWidget(window)
+    return window
+
+
+def test_repeat_menu_is_exclusive_radio(qtbot, tmp_path) -> None:
+    window = _make_window(qtbot, tmp_path)
+    actions = window._repeat_actions
+    assert set(actions) == {"none", "all", "one"}
+    assert window._repeat_group.isExclusive()
+    for action in actions.values():
+        assert action.isCheckable()
+    checked = [k for k, a in actions.items() if a.isChecked()]
+    assert checked == ["none"]
+
+
+def test_repeat_menu_action_sets_mode(qtbot, tmp_path) -> None:
+    from desktop_music.core.playmode import RepeatMode
+
+    window = _make_window(qtbot, tmp_path)
+    window._repeat_actions["one"].trigger()
+    assert window.controller.play_mode.repeat == RepeatMode.ONE
+    assert window._repeat_actions["one"].isChecked()
+
+
+def test_control_bar_repeat_buttons_are_radio(qtbot, tmp_path) -> None:
+    window = _make_window(qtbot, tmp_path)
+    bar = window._control_bar
+    assert set(bar._repeat_buttons) == {"none", "all", "one"}
+    for btn in bar._repeat_buttons.values():
+        assert btn.isCheckable()
+    # exactly the active mode (none) is checked initially
+    checked = [m for m, b in bar._repeat_buttons.items() if b.isChecked()]
+    assert checked == ["none"]
+
+
+def test_control_bar_repeat_button_selects_mode(qtbot, tmp_path) -> None:
+    from desktop_music.core.playmode import RepeatMode
+
+    window = _make_window(qtbot, tmp_path)
+    bar = window._control_bar
+    # click the "all" button -> controller switches to repeat-all and only
+    # that button stays checked
+    bar._repeat_all_btn.click()
+    assert window.controller.play_mode.repeat == RepeatMode.ALL
+    checked = [m for m, b in bar._repeat_buttons.items() if b.isChecked()]
+    assert checked == ["all"]
+    # pick "one" -> exclusive switch
+    bar._repeat_one_btn.click()
+    assert window.controller.play_mode.repeat == RepeatMode.ONE
+    checked = [m for m, b in bar._repeat_buttons.items() if b.isChecked()]
+    assert checked == ["one"]
+
+
+def test_control_bar_and_menu_stay_in_sync(qtbot, tmp_path) -> None:
+    window = _make_window(qtbot, tmp_path)
+    # selecting via the menu reflects on the control-bar buttons…
+    window._repeat_actions["all"].trigger()
+    assert window._control_bar._repeat_all_btn.isChecked()
+    assert not window._control_bar._repeat_none_btn.isChecked()
+    # …and selecting via the control bar reflects on the menu
+    window._control_bar._repeat_one_btn.click()
+    assert window._repeat_actions["one"].isChecked()
+    assert not window._repeat_actions["all"].isChecked()

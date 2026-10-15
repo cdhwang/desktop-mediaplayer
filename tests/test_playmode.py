@@ -25,6 +25,16 @@ def test_cycle_repeat() -> None:
     assert pm.cycle_repeat() == RepeatMode.NONE
 
 
+def test_set_repeat_sets_mode_directly() -> None:
+    pm = PlayMode()
+    assert pm.set_repeat(RepeatMode.ONE) == RepeatMode.ONE
+    assert pm.repeat == RepeatMode.ONE
+    assert pm.set_repeat(RepeatMode.ALL) == RepeatMode.ALL
+    assert pm.repeat == RepeatMode.ALL
+    assert pm.set_repeat(RepeatMode.NONE) == RepeatMode.NONE
+    assert pm.repeat == RepeatMode.NONE
+
+
 # -- next/previous decisions ----------------------------------------------
 
 

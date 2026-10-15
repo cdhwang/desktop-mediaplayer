@@ -27,6 +27,7 @@ from desktop_music.constants import (
 )
 from desktop_music.core.controller import PlayerController, VOLUME_STEP
 from desktop_music.core.playlist import PlaylistModel, scan_dir_flat
+from desktop_music.core.playmode import RepeatMode
 from desktop_music.core.shortcuts import ShortcutManager
 from desktop_music.services.backend import PlaybackState
 from desktop_music.services.equalizer import PRESET_NONE, EqualizerService
@@ -72,6 +73,13 @@ class MainWindow(QMainWindow):
         # programmatic volume/rate changes on launch don't flash the overlay.
         self._osd_ready = False
         self._shortcuts = ShortcutManager(self, self.dispatch_command)
+        # Snapshot of the last-seen play mode so OSD feedback can tell whether
+        # a change toggled shuffle or cycled repeat.
+        self._last_play_mode: tuple[bool, str] | None = None
+        # Set when the user explicitly skips to the next/previous track, so
+        # the resulting ``media_changed`` flashes the new track's title. Not
+        # set for auto-advance or startup restore, which shouldn't flash.
+        self._announce_next_track = False
 
         # Windows taskbar overlay badge reflecting play/pause state. No-op on
         # other platforms. Icons are loaded lazily on first state change.
@@ -121,8 +129,22 @@ class MainWindow(QMainWindow):
             self.toggle_fullscreen()
         elif command_id == cmd.SNAPSHOT:
             self.take_snapshot()
+        elif command_id == cmd.NEXT:
+            self.play_next()
+        elif command_id == cmd.PREVIOUS:
+            self.play_previous()
         else:
             self._controller.dispatch(command_id)
+
+    def play_next(self) -> None:
+        """Skip to the next track, flagging the change for an OSD title flash."""
+        self._announce_next_track = True
+        self._controller.next()
+
+    def play_previous(self) -> None:
+        """Skip to the previous track, flagging the change for an OSD flash."""
+        self._announce_next_track = True
+        self._controller.previous()
 
     def open_shortcut_dialog(self) -> None:
         from desktop_music.ui.shortcut_dialog import ShortcutDialog
@@ -270,6 +292,28 @@ class MainWindow(QMainWindow):
             action = QAction(label, self)
             action.triggered.connect(lambda _checked=False, r=rate: self.set_rate(r))
             speed_menu.addAction(action)
+        # repeat submenu: mutually-exclusive radio items (None / All / One)
+        from PyQt6.QtGui import QActionGroup
+
+        repeat_menu = pb_menu.addMenu("Repeat")
+        self._repeat_group = QActionGroup(self)
+        self._repeat_group.setExclusive(True)
+        self._repeat_actions: dict[str, "QAction"] = {}
+        for label, mode in (
+            ("None", RepeatMode.NONE),
+            ("All", RepeatMode.ALL),
+            ("One", RepeatMode.ONE),
+        ):
+            action = QAction(label, self)
+            action.setCheckable(True)
+            self._repeat_group.addAction(action)
+            action.triggered.connect(
+                lambda _checked=False, m=mode: self._controller.set_repeat(m)
+            )
+            self._repeat_actions[mode.value] = action
+            repeat_menu.addAction(action)
+        # reflect the current mode on build; kept in sync via _on_play_mode_changed
+        self._sync_repeat_menu(self._controller.play_mode.repeat.value)
         # dynamic audio/subtitle track menus
         self._audio_menu = pb_menu.addMenu("Audio Track")
         self._audio_menu.aboutToShow.connect(self._populate_audio_menu)
@@ -353,14 +397,14 @@ class MainWindow(QMainWindow):
 
         cb.play_pause_clicked.connect(ctrl.toggle_pause)
         cb.stop_clicked.connect(ctrl.stop)
-        cb.next_clicked.connect(ctrl.next)
-        cb.previous_clicked.connect(ctrl.previous)
+        cb.next_clicked.connect(self.play_next)
+        cb.previous_clicked.connect(self.play_previous)
         cb.mute_clicked.connect(ctrl.toggle_mute)
         cb.seek_requested.connect(ctrl.seek_to_fraction)
         cb.volume_changed.connect(ctrl.set_volume)
         cb.fullscreen_clicked.connect(self.toggle_fullscreen)
         cb.shuffle_clicked.connect(ctrl.toggle_shuffle)
-        cb.repeat_clicked.connect(ctrl.cycle_repeat)
+        cb.repeat_mode_selected.connect(self._on_repeat_mode_selected)
         cb.eject_clicked.connect(self._open_files_dialog)
         cb.settings_clicked.connect(self.open_equalizer_dialog)
         cb.menu_clicked.connect(self._show_main_menu)
@@ -492,6 +536,22 @@ class MainWindow(QMainWindow):
     def _on_state_changed(self, state: PlaybackState) -> None:
         self._control_bar.set_playing(state == PlaybackState.PLAYING)
         self._update_taskbar_overlay(state)
+        self._on_state_osd(state)
+
+    def _on_state_osd(self, state: PlaybackState) -> None:
+        """Flash a transient status message when playback state changes.
+
+        The controller only emits ``state_changed`` on an actual transition,
+        so this fires once per user-visible change rather than on every poll.
+        """
+        if not self._osd_ready:
+            return
+        if state == PlaybackState.PLAYING:
+            self._central_display.show_osd("Play")
+        elif state == PlaybackState.PAUSED:
+            self._central_display.show_osd("Pause")
+        elif state == PlaybackState.STOPPED:
+            self._central_display.show_osd("Stop")
 
     def _update_taskbar_overlay(self, state: PlaybackState) -> None:
         """Reflect playback state as a taskbar button overlay badge.
@@ -652,6 +712,22 @@ class MainWindow(QMainWindow):
                 duration_ms=meta.duration_ms,
             )
 
+        # Flash the new track's title when the change came from an explicit
+        # next/previous skip. Consume the flag unconditionally so a later
+        # auto-advance or restore never inherits a stale request.
+        announce = self._announce_next_track
+        self._announce_next_track = False
+        if announce and self._osd_ready:
+            label = self._now_playing_label(meta, fallback)
+            if label:
+                self._central_display.show_osd(label)
+
+    def _now_playing_label(self, meta, fallback: str) -> str:
+        """Build a compact "Title - Artist" label for the track OSD."""
+        title = (meta.title or "").strip() or fallback.strip()
+        artist = (meta.artist or "").strip()
+        return f"{title} - {artist}" if title and artist else title
+
     def show_lyrics(self) -> None:
         """Switch the central display to the lyrics page."""
         self._central_display.show_page("lyrics")
@@ -681,6 +757,50 @@ class MainWindow(QMainWindow):
     def _on_play_mode_changed(self) -> None:
         pm = self._controller.play_mode
         self._control_bar.set_play_mode_display(pm.shuffle, pm.repeat.value)
+        self._sync_repeat_menu(pm.repeat.value)
+        self._on_play_mode_osd(pm.shuffle, pm.repeat.value)
+
+    def _on_repeat_mode_selected(self, mode: str) -> None:
+        """Apply a repeat mode chosen from the control-bar radio buttons."""
+        try:
+            self._controller.set_repeat(RepeatMode(mode))
+        except ValueError:
+            pass
+
+    def _sync_repeat_menu(self, repeat: str) -> None:
+        """Check the radio item matching the active repeat mode.
+
+        We connect each action's ``triggered`` signal (fired only on user
+        interaction / ``trigger()``), not ``toggled``, so ``setChecked`` here
+        updates the UI without re-invoking ``set_repeat``. The exclusive
+        QActionGroup unchecks the others automatically.
+        """
+        actions = getattr(self, "_repeat_actions", None)
+        if not actions:
+            return
+        action = actions.get(repeat)
+        if action is not None and not action.isChecked():
+            action.setChecked(True)
+
+    def _on_play_mode_osd(self, shuffle: bool, repeat: str) -> None:
+        """Flash OSD feedback describing what the play-mode change did.
+
+        Compares against the previous snapshot so a shuffle toggle and a
+        repeat cycle produce distinct messages, regardless of whether the
+        change came from the control bar or a keyboard shortcut.
+        """
+        prev = self._last_play_mode
+        self._last_play_mode = (shuffle, repeat)
+        if not self._osd_ready or prev is None:
+            return
+        prev_shuffle, prev_repeat = prev
+        if shuffle != prev_shuffle:
+            self._central_display.show_osd(
+                "Shuffle  On" if shuffle else "Shuffle  Off"
+            )
+        elif repeat != prev_repeat:
+            labels = {"none": "Repeat  Off", "all": "Repeat  All", "one": "Repeat  One"}
+            self._central_display.show_osd(labels.get(repeat, f"Repeat  {repeat}"))
 
     # -- persistence -------------------------------------------------------
 

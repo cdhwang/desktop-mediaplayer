@@ -39,6 +39,11 @@ class PlayMode:
         self.repeat = order[(idx + 1) % len(order)]
         return self.repeat
 
+    def set_repeat(self, mode: RepeatMode) -> RepeatMode:
+        """Set the repeat mode directly (used by the radio-style menu)."""
+        self.repeat = mode
+        return self.repeat
+
     # -- decisions ---------------------------------------------------------
 
     def next_row(

@@ -181,6 +181,12 @@ class PlayerController(QObject):
         self.play_mode_changed.emit()
         return mode
 
+    def set_repeat(self, mode: RepeatMode) -> RepeatMode:
+        """Set the repeat mode directly and notify listeners."""
+        result = self._play_mode.set_repeat(mode)
+        self.play_mode_changed.emit()
+        return result
+
     def _on_playback_ended(self) -> None:
         """Auto-advance when a track ends naturally."""
         if self._playlist is None or self._playlist.rowCount() == 0:

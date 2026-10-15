@@ -166,3 +166,123 @@ def test_rate_change_flashes_osd(qtbot) -> None:
     window.controller.set_rate(1.5)
     assert not window._central_display.osd.isHidden()
     assert "1.50x" in window._central_display.osd.text()
+
+
+# -- playback state OSD ----------------------------------------------------
+
+
+def test_play_state_flashes_osd(qtbot) -> None:
+    window = _make_window(qtbot)
+    window._on_state_changed(PlaybackState.PLAYING)
+    assert not window._central_display.osd.isHidden()
+    assert window._central_display.osd.text() == "Play"
+
+
+def test_pause_state_flashes_osd(qtbot) -> None:
+    window = _make_window(qtbot)
+    window._on_state_changed(PlaybackState.PAUSED)
+    assert window._central_display.osd.text() == "Pause"
+
+
+def test_stop_state_flashes_osd(qtbot) -> None:
+    window = _make_window(qtbot)
+    window._on_state_changed(PlaybackState.STOPPED)
+    assert window._central_display.osd.text() == "Stop"
+
+
+# -- shuffle / repeat OSD --------------------------------------------------
+
+
+def test_shuffle_toggle_flashes_osd(qtbot) -> None:
+    window = _make_window(qtbot)
+    window.controller.toggle_shuffle()  # off -> on
+    assert window._central_display.osd.text() == "Shuffle  On"
+    window.controller.toggle_shuffle()  # on -> off
+    assert window._central_display.osd.text() == "Shuffle  Off"
+
+
+def test_repeat_cycle_flashes_osd(qtbot) -> None:
+    window = _make_window(qtbot)
+    window.controller.cycle_repeat()  # none -> all
+    assert window._central_display.osd.text() == "Repeat  All"
+    window.controller.cycle_repeat()  # all -> one
+    assert window._central_display.osd.text() == "Repeat  One"
+    window.controller.cycle_repeat()  # one -> none
+    assert window._central_display.osd.text() == "Repeat  Off"
+
+
+# -- next / previous track OSD ---------------------------------------------
+
+
+def _stub_media_pipeline(window, monkeypatch, *, title="Song", artist="Artist"):
+    """Patch the heavy media pipeline so ``_on_media_changed`` is cheap.
+
+    Returns metadata with the given title/artist and avoids touching the
+    filesystem or spectrum analyzer.
+    """
+    from desktop_music.services.metadata import Metadata
+    from desktop_music.ui import main_window as mw
+
+    monkeypatch.setattr(
+        mw, "read_metadata", lambda path: Metadata(title=title, artist=artist)
+    )
+    monkeypatch.setattr(mw, "read_lyrics", lambda path: "")
+    window._central_display.spectrum.analyze = MagicMock()
+    window._central_display.spectrum.start = MagicMock()
+    window._central_display.spectrum.stop = MagicMock()
+
+
+def test_play_next_sets_announce_flag(qtbot) -> None:
+    window = _make_window(qtbot)
+    window._controller.next = MagicMock()
+    window.play_next()
+    assert window._announce_next_track is True
+    window._controller.next.assert_called_once()
+
+
+def test_play_previous_sets_announce_flag(qtbot) -> None:
+    window = _make_window(qtbot)
+    window._controller.previous = MagicMock()
+    window.play_previous()
+    assert window._announce_next_track is True
+    window._controller.previous.assert_called_once()
+
+
+def test_next_track_flashes_title_osd(qtbot, monkeypatch) -> None:
+    window = _make_window(qtbot)
+    _stub_media_pipeline(window, monkeypatch, title="Beta", artist="BandB")
+    window.playlist.add_paths(["/a.mp3", "/b.mp3"])
+    window.playlist.set_current(1)
+
+    window._announce_next_track = True
+    window._on_media_changed("/b.mp3")
+
+    assert not window._central_display.osd.isHidden()
+    assert window._central_display.osd.text() == "Beta - BandB"
+    # flag consumed so a later auto-advance won't re-flash
+    assert window._announce_next_track is False
+
+
+def test_auto_advance_does_not_flash_osd(qtbot, monkeypatch) -> None:
+    window = _make_window(qtbot)
+    _stub_media_pipeline(window, monkeypatch, title="Gamma", artist="BandC")
+    window.playlist.add_paths(["/a.mp3", "/b.mp3"])
+    window.playlist.set_current(0)
+
+    # no explicit skip => flag stays False => no OSD
+    window._on_media_changed("/a.mp3")
+
+    assert window._central_display.osd.isHidden()
+
+
+def test_next_track_osd_falls_back_to_filename(qtbot, monkeypatch) -> None:
+    window = _make_window(qtbot)
+    # empty tags => fall back to the file name
+    _stub_media_pipeline(window, monkeypatch, title="", artist="")
+    window.playlist.add_paths(["/music/track01.mp3"])
+    window.playlist.set_current(0)
+
+    window._announce_next_track = True
+    window._on_media_changed("/music/track01.mp3")
+
+    assert window._central_display.osd.text() == "track01.mp3"

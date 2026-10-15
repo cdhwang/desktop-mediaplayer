@@ -88,7 +88,8 @@ class ControlBar(QWidget):
     fullscreen_clicked = pyqtSignal()
     mute_clicked = pyqtSignal()
     shuffle_clicked = pyqtSignal()
-    repeat_clicked = pyqtSignal()
+    # user picked a repeat mode via the radio-style buttons: "none"/"all"/"one"
+    repeat_mode_selected = pyqtSignal(str)
     settings_clicked = pyqtSignal()
     menu_clicked = pyqtSignal()
     # user dragged/clicked the seek bar to a fraction 0.0..1.0
@@ -153,11 +154,27 @@ class ControlBar(QWidget):
         self._shuffle_btn = self._icon_btn(
             "\U0001f500", self.shuffle_clicked, "Shuffle"
         )
-        self._repeat_btn = self._icon_btn(
-            "\U0001f501", self.repeat_clicked, "Repeat"
-        )
         self._shuffle_btn.setCheckable(True)
-        self._repeat_btn.setCheckable(True)
+
+        # Repeat as three mutually-exclusive radio-style buttons shown side by
+        # side: No Repeat / Repeat All / Repeat One. Checking is reflected via
+        # set_play_mode_display; clicking emits repeat_mode_selected(mode).
+        self._repeat_none_btn = self._icon_btn(
+            "\u27a1", lambda: self.repeat_mode_selected.emit("none"), "No Repeat"
+        )
+        self._repeat_all_btn = self._icon_btn(
+            "\U0001f501", lambda: self.repeat_mode_selected.emit("all"), "Repeat All"
+        )
+        self._repeat_one_btn = self._icon_btn(
+            "\U0001f502", lambda: self.repeat_mode_selected.emit("one"), "Repeat One"
+        )
+        self._repeat_buttons = {
+            "none": self._repeat_none_btn,
+            "all": self._repeat_all_btn,
+            "one": self._repeat_one_btn,
+        }
+        for btn in self._repeat_buttons.values():
+            btn.setCheckable(True)
         self._settings_btn = self._icon_btn(
             "\u2699", self.settings_clicked, "Settings"
         )
@@ -178,7 +195,11 @@ class ControlBar(QWidget):
         row2.addWidget(self._time_lbl)
         row2.addStretch(1)
         row2.addWidget(self._shuffle_btn)
-        row2.addWidget(self._repeat_btn)
+        row2.addSpacing(6)
+        row2.addWidget(self._repeat_none_btn)
+        row2.addWidget(self._repeat_all_btn)
+        row2.addWidget(self._repeat_one_btn)
+        row2.addSpacing(6)
         row2.addWidget(self._fullscreen_btn)
         row2.addWidget(self._settings_btn)
         row2.addWidget(self._menu_btn)
@@ -237,10 +258,9 @@ class ControlBar(QWidget):
 
     def set_play_mode_display(self, shuffle: bool, repeat: str) -> None:
         self._shuffle_btn.setChecked(shuffle)
-        self._repeat_btn.setChecked(repeat != "none")
-        marker = {"none": "\U0001f501", "all": "\U0001f501", "one": "\U0001f502"}
-        self._repeat_btn.setText(marker.get(repeat, "\U0001f501"))
-        self._repeat_btn.setToolTip(f"Repeat: {repeat}")
+        # Reflect the active repeat mode as the single checked radio button.
+        for mode, btn in self._repeat_buttons.items():
+            btn.setChecked(mode == repeat)
 
     # -- seek slider interaction ------------------------------------------
 
