@@ -320,6 +320,60 @@ def test_directory_scan_excludes_cue(tmp_path) -> None:
     assert any(p.endswith("unrelated.mp3") for p in paths)
 
 
+def test_play_same_file_after_stop_defers_seek() -> None:
+    """Playing a cue track that shares the backing file after a stop must
+    defer the segment seek until playback actually starts.
+
+    Reproduces the bug: while a cue playlist is playing, deleting the first
+    item and pressing stop, then playing the new first item (another segment
+    of the same backing file) replayed the *deleted* segment -- because a
+    bare seek() before play() is a no-op in libVLC's stopped state, so the
+    file started from the beginning (the previous segment).
+    """
+    from unittest.mock import MagicMock
+
+    from desktop_music.core.controller import PlayerController
+    from desktop_music.core.playlist import PlaylistModel, Track
+    from desktop_music.services.backend import PlaybackState
+
+    backend = MagicMock()
+    # Backend is stopped (user pressed stop after deleting the first item),
+    # but the previously-loaded media is still the shared backing file.
+    backend.get_state.return_value = PlaybackState.STOPPED
+    backend.current_path = "/x/album.ape"
+    backend.get_volume.return_value = 50
+    backend.is_muted.return_value = False
+    backend.get_length.return_value = 4_300_000
+
+    controller = PlayerController(backend=backend)
+    controller._timer.stop()
+    model = PlaylistModel()
+    # The remaining first track is a mid-file segment of the same backing file.
+    model._tracks = [
+        Track(path="/x/album.ape", title="B", start_ms=2_000_000, end_ms=0),
+    ]
+    model._current = 0
+    controller.set_playlist(model)
+
+    controller.play_row(0, autoplay=True)
+
+    # Must NOT have seeked immediately while stopped (that would be a no-op);
+    # instead the seek is deferred and the media is (re)loaded + played.
+    backend.seek.assert_not_called()
+    assert controller._seg_pending_seek is True
+    backend.load.assert_called_with("/x/album.ape")
+    backend.play.assert_called()
+
+    # Once playback starts, the poll loop applies the deferred segment seek
+    # to the correct (new) segment start, not the deleted track's.
+    backend.get_state.return_value = PlaybackState.PLAYING
+    backend.get_time.return_value = 2_000_000
+    controller._poll()
+    backend.seek.assert_any_call(2_000_000)
+    assert controller._seg_pending_seek is False
+
+
+
 # -- drag & drop acceptance ------------------------------------------------
 
 

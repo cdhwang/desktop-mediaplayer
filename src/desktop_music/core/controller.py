@@ -122,9 +122,20 @@ class PlayerController(QObject):
             self._seg_start = getattr(track, "start_ms", 0) or 0
             self._seg_end = getattr(track, "end_ms", 0) or 0
             # If several cue tracks share one backing file we can seek within
-            # the already-loaded media instead of reloading it.
+            # the already-loaded media instead of reloading it -- but only
+            # when the backend is actually playing/paused. When stopped (or
+            # ended), libVLC has torn the media down and a seek() before
+            # play() is a no-op, so playback would start from the file's
+            # beginning (the *previous* segment) instead of this track. In
+            # that case fall through to the deferred-seek path so the segment
+            # start is applied once playback actually begins.
             same_file = self._backend.current_path == track.path
-            if same_file and self._seg_start >= 0:
+            is_live = self._backend.get_state() in (
+                PlaybackState.PLAYING,
+                PlaybackState.PAUSED,
+                PlaybackState.BUFFERING,
+            )
+            if same_file and is_live and self._seg_start >= 0:
                 self._backend.seek(self._seg_start)
                 self._seg_pending_seek = False
                 self.media_changed.emit(track.path)
