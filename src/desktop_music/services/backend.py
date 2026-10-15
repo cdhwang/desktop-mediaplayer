@@ -45,21 +45,17 @@ class VLCBackend:
     Time values are handled in milliseconds (libVLC's native unit).
     Volume is an integer percentage in the range 0..100 (clamped).
 
-    ``normalize`` enables libVLC's ``normvol`` audio filter (a real-time
-    volume normalizer, similar in purpose to PotPlayer's normalizer). libVLC
-    only lets audio filters be chosen when the ``Instance`` is created, so
-    toggling normalization at runtime requires building a *new* backend — see
+    ``compressor`` enables libVLC's ``compressor`` audio filter (a real-time
+    dynamic range compressor, similar in purpose to PotPlayer's volume
+    normalizer). libVLC only lets audio filters be chosen when the
+    ``Instance`` is created, so toggling it at runtime requires building a
+    *new* backend — see
     :class:`~desktop_music.core.controller.PlayerController`, which recreates
     the backend and restores playback state when the setting changes.
     """
 
-    # normvol tuning (see `vlc -H`): average power is measured over the last
-    # NORM_BUFF_SIZE audio buffers; volume is leveled toward NORM_MAX_LEVEL.
-    _NORM_MAX_LEVEL = 2.0
-    _NORM_BUFF_SIZE = 20
-
-    def __init__(self, normalize: bool = False) -> None:
-        self._normalize = bool(normalize)
+    def __init__(self, compressor: bool = False) -> None:
+        self._compressor = bool(compressor)
         # When libVLC renders into an embedded native window it normally
         # creates its own video child window that *steals* mouse and keyboard
         # events, so Qt never sees double-clicks / wheel / right-clicks over
@@ -70,7 +66,9 @@ class VLCBackend:
             "--no-mouse-events",
             "--no-keyboard-events",
         ]
-        if self._normalize:
+        if self._compressor:
+            # Dynamic range compressor (see `vlc -H`): evens out loud/quiet
+            # passages, similar in purpose to a volume normalizer.
             args += [
                 "--audio-filter=compressor",
                 "--compressor-rms-peak=0.0",
@@ -79,10 +77,7 @@ class VLCBackend:
                 "--compressor-threshold=-26.0",
                 "--compressor-ratio=4.5",
                 "--compressor-makeup-gain=16.0",
-                "--compressor-knee=2.5"
-                # "--audio-filter=normvol",
-                # f"--norm-max-level={self._NORM_MAX_LEVEL}",
-                # f"--norm-buff-size={self._NORM_BUFF_SIZE}",
+                "--compressor-knee=2.5",
             ]
         # Instance args select the audio filter chain; video output window is
         # attached later via set_video_window().
@@ -93,9 +88,9 @@ class VLCBackend:
         self._current_path: Optional[str] = None
 
     @property
-    def normalize(self) -> bool:
-        """Whether the volume normalizer (normvol) filter is active."""
-        return self._normalize
+    def compressor(self) -> bool:
+        """Whether the dynamic range compressor filter is active."""
+        return self._compressor
 
     # -- media loading -----------------------------------------------------
 

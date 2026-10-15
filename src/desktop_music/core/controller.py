@@ -51,8 +51,8 @@ class PlayerController(QObject):
     # emitted right after an explicit seek: (position_ms, length_ms),
     # both relative to the current cue segment when one is active
     seeked = pyqtSignal(int, int)
-    # emitted when the audio normalizer is toggled (new on/off state)
-    normalize_changed = pyqtSignal(bool)
+    # emitted when the audio compressor is toggled (new on/off state)
+    compressor_changed = pyqtSignal(bool)
 
     def __init__(self, backend: VLCBackend | None = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -81,11 +81,11 @@ class PlayerController(QObject):
         self._seg_pending_seek = False
 
         # Optional hook invoked after the backend is rebuilt (e.g. when the
-        # audio normalizer is toggled), so the UI can re-attach video output
+        # audio compressor is toggled), so the UI can re-attach video output
         # to the new MediaPlayer. Set by the window via set_backend_rebuilt_hook.
         self._on_backend_rebuilt = None  # type: ignore[assignment]
 
-        # Deferred resume-seek after a backend rebuild (normalizer toggle).
+        # Deferred resume-seek after a backend rebuild (compressor toggle).
         self._resume_pending = False
         self._resume_seek_ms = 0
         self._resume_pause = False
@@ -298,30 +298,30 @@ class PlayerController(QObject):
         self._backend.set_muted(not self._backend.is_muted())
         self.volume_changed.emit(self._volume, self._backend.is_muted())
 
-    # -- audio normalizer --------------------------------------------------
+    # -- audio compressor --------------------------------------------------
 
     @property
-    def normalize(self) -> bool:
-        """Whether the volume normalizer (normvol) is currently enabled."""
-        return getattr(self._backend, "normalize", False) is True
+    def compressor(self) -> bool:
+        """Whether the dynamic range compressor is currently enabled."""
+        return getattr(self._backend, "compressor", False) is True
 
     def set_backend_rebuilt_hook(self, hook) -> None:
         """Register a callable invoked after the backend is rebuilt.
 
         The UI uses this to re-attach video output to the fresh MediaPlayer,
-        since toggling the normalizer replaces the whole backend instance.
+        since toggling the compressor replaces the whole backend instance.
         """
         self._on_backend_rebuilt = hook
 
-    def set_normalize(self, enabled: bool) -> None:
-        """Enable/disable the audio normalizer.
+    def set_compressor(self, enabled: bool) -> None:
+        """Enable/disable the audio compressor.
 
         libVLC fixes the audio-filter chain at instance creation, so this
         rebuilds the backend with the new setting and restores the current
         playback state (track, position, volume, mute, rate, play/pause).
         """
         enabled = bool(enabled)
-        if enabled == self.normalize:
+        if enabled == self.compressor:
             return
 
         # --- snapshot current playback state ---
@@ -338,7 +338,7 @@ class PlayerController(QObject):
 
         # --- rebuild backend with the new filter setting ---
         self._backend.release()
-        self._backend = VLCBackend(normalize=enabled)
+        self._backend = VLCBackend(compressor=enabled)
 
         # Let the UI re-attach video output to the new player before playback.
         if self._on_backend_rebuilt is not None:
@@ -370,14 +370,14 @@ class PlayerController(QObject):
         else:
             self._resume_pending = False
 
-        self.normalize_changed.emit(self.normalize)
+        self.compressor_changed.emit(self.compressor)
         # re-emit volume so the slider/OSD reflect the restored backend
         self.volume_changed.emit(self._volume, self._backend.is_muted())
 
-    def toggle_normalize(self) -> bool:
-        """Flip the normalizer on/off and return the new state."""
-        self.set_normalize(not self.normalize)
-        return self.normalize
+    def toggle_compressor(self) -> bool:
+        """Flip the compressor on/off and return the new state."""
+        self.set_compressor(not self.compressor)
+        return self.compressor
 
     # -- playback rate -----------------------------------------------------
 
@@ -424,7 +424,7 @@ class PlayerController(QObject):
     def _poll(self) -> None:
         state = self._backend.get_state()
 
-        # After a backend rebuild (normalizer toggle), restore the playback
+        # After a backend rebuild (compressor toggle), restore the playback
         # position once the new player is actually running, then optionally
         # settle back into a paused state.
         if self._resume_pending and state in (

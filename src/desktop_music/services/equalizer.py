@@ -35,7 +35,7 @@ class EqualizerService:
         """Point at a new backend and re-apply the current preset.
 
         Used when the backend is recreated (e.g. toggling the audio
-        normalizer), since EQ state lives on the libVLC media player.
+        compressor), since EQ state lives on the libVLC media player.
         """
         self._backend = backend
         if self._preset_index != PRESET_NONE:

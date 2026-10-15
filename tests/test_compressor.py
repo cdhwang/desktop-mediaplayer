@@ -1,10 +1,10 @@
-"""Tests for the audio normalizer (normvol) on/off toggle.
+"""Tests for the audio compressor on/off toggle.
 
 The toggle rebuilds the libVLC backend (audio filters are fixed at instance
 creation) and restores playback state. These tests cover:
   * the backend-rebuild + state-restore sequence (with a mocked backend
     factory, so no real audio device is needed and calls are inspectable),
-  * the ``normalize_changed`` signal,
+  * the ``compressor_changed`` signal,
   * the controller's deferred resume-seek applied from ``_poll``,
   * persistence of the setting through the main window,
   * end-to-end behaviour against real libVLC.
@@ -23,10 +23,10 @@ from desktop_music.services.backend import PlaybackState
 
 
 def _playing_backend_mock(
-    *, normalize: bool, path: str | None, volume: int = 50
+    *, compressor: bool, path: str | None, volume: int = 50
 ) -> MagicMock:
     b = MagicMock()
-    b.normalize = normalize
+    b.compressor = compressor
     b.current_path = path
     b.is_playing.return_value = True
     b.get_state.return_value = PlaybackState.PLAYING
@@ -49,27 +49,27 @@ def _make_controller_with_mock(monkeypatch, initial: MagicMock) -> PlayerControl
 # -- controller: rebuild + restore ----------------------------------------
 
 
-def test_set_normalize_rebuilds_backend_and_restores_state(monkeypatch) -> None:
-    old = _playing_backend_mock(normalize=False, path="/tmp/song.flac", volume=63)
-    new = _playing_backend_mock(normalize=True, path=None, volume=0)
+def test_set_compressor_rebuilds_backend_and_restores_state(monkeypatch) -> None:
+    old = _playing_backend_mock(compressor=False, path="/tmp/song.flac", volume=63)
+    new = _playing_backend_mock(compressor=True, path=None, volume=0)
 
     ctrl = _make_controller_with_mock(monkeypatch, old)
     # pretend media is loaded & playing at a position with a custom volume
     ctrl._volume = 63
 
-    # intercept the VLCBackend constructor used inside set_normalize
+    # intercept the VLCBackend constructor used inside set_compressor
     created = {}
 
-    def fake_factory(normalize=False):
-        created["normalize"] = normalize
+    def fake_factory(compressor=False):
+        created["compressor"] = compressor
         return new
 
     monkeypatch.setattr(controller_mod, "VLCBackend", fake_factory)
 
-    ctrl.set_normalize(True)
+    ctrl.set_compressor(True)
 
-    # new backend created with normalize=True and swapped in
-    assert created["normalize"] is True
+    # new backend created with compressor=True and swapped in
+    assert created["compressor"] is True
     assert ctrl.backend is new
     old.release.assert_called_once()
 
@@ -79,69 +79,69 @@ def test_set_normalize_rebuilds_backend_and_restores_state(monkeypatch) -> None:
     new.set_rate.assert_called_once_with(1.0)
     new.load.assert_called_once_with("/tmp/song.flac")
     new.play.assert_called_once()
-    assert ctrl.normalize is True
+    assert ctrl.compressor is True
 
 
-def test_set_normalize_noop_when_unchanged(monkeypatch) -> None:
-    old = _playing_backend_mock(normalize=False, path=None)
+def test_set_compressor_noop_when_unchanged(monkeypatch) -> None:
+    old = _playing_backend_mock(compressor=False, path=None)
     ctrl = _make_controller_with_mock(monkeypatch, old)
 
     called = {"n": 0}
     monkeypatch.setattr(
         controller_mod,
         "VLCBackend",
-        lambda normalize=False: called.__setitem__("n", called["n"] + 1),
+        lambda compressor=False: called.__setitem__("n", called["n"] + 1),
     )
-    ctrl.set_normalize(False)  # already off
+    ctrl.set_compressor(False)  # already off
     assert called["n"] == 0
     assert ctrl.backend is old
 
 
-def test_normalize_changed_signal_emitted(qtbot, monkeypatch) -> None:
-    old = _playing_backend_mock(normalize=False, path=None)
-    new = _playing_backend_mock(normalize=True, path=None)
+def test_compressor_changed_signal_emitted(qtbot, monkeypatch) -> None:
+    old = _playing_backend_mock(compressor=False, path=None)
+    new = _playing_backend_mock(compressor=True, path=None)
     ctrl = _make_controller_with_mock(monkeypatch, old)
-    monkeypatch.setattr(controller_mod, "VLCBackend", lambda normalize=False: new)
+    monkeypatch.setattr(controller_mod, "VLCBackend", lambda compressor=False: new)
 
-    with qtbot.waitSignal(ctrl.normalize_changed) as blocker:
-        ctrl.set_normalize(True)
+    with qtbot.waitSignal(ctrl.compressor_changed) as blocker:
+        ctrl.set_compressor(True)
     assert blocker.args == [True]
 
 
 def test_backend_rebuilt_hook_called_with_new_backend(monkeypatch) -> None:
-    old = _playing_backend_mock(normalize=False, path=None)
-    new = _playing_backend_mock(normalize=True, path=None)
+    old = _playing_backend_mock(compressor=False, path=None)
+    new = _playing_backend_mock(compressor=True, path=None)
     ctrl = _make_controller_with_mock(monkeypatch, old)
-    monkeypatch.setattr(controller_mod, "VLCBackend", lambda normalize=False: new)
+    monkeypatch.setattr(controller_mod, "VLCBackend", lambda compressor=False: new)
 
     seen = {}
     ctrl.set_backend_rebuilt_hook(lambda b: seen.setdefault("backend", b))
-    ctrl.set_normalize(True)
+    ctrl.set_compressor(True)
     assert seen["backend"] is new
 
 
-def test_toggle_normalize_flips_and_returns_state(monkeypatch) -> None:
-    old = _playing_backend_mock(normalize=False, path=None)
-    new = _playing_backend_mock(normalize=True, path=None)
+def test_toggle_compressor_flips_and_returns_state(monkeypatch) -> None:
+    old = _playing_backend_mock(compressor=False, path=None)
+    new = _playing_backend_mock(compressor=True, path=None)
     ctrl = _make_controller_with_mock(monkeypatch, old)
-    monkeypatch.setattr(controller_mod, "VLCBackend", lambda normalize=False: new)
+    monkeypatch.setattr(controller_mod, "VLCBackend", lambda compressor=False: new)
 
-    assert ctrl.toggle_normalize() is True
-    assert ctrl.normalize is True
+    assert ctrl.toggle_compressor() is True
+    assert ctrl.compressor is True
 
 
 def test_resume_seek_applied_from_poll(monkeypatch) -> None:
     """After a rebuild the controller defers the resume-seek until the new
     player is actually playing, applied on the next _poll tick."""
-    old = _playing_backend_mock(normalize=False, path="/tmp/x.flac")
-    new = _playing_backend_mock(normalize=True, path=None)
+    old = _playing_backend_mock(compressor=False, path="/tmp/x.flac")
+    new = _playing_backend_mock(compressor=True, path=None)
     # new backend starts "opening", then transitions to playing
     new.get_state.side_effect = [PlaybackState.OPENING, PlaybackState.PLAYING]
 
     ctrl = _make_controller_with_mock(monkeypatch, old)
-    monkeypatch.setattr(controller_mod, "VLCBackend", lambda normalize=False: new)
+    monkeypatch.setattr(controller_mod, "VLCBackend", lambda compressor=False: new)
 
-    ctrl.set_normalize(True)
+    ctrl.set_compressor(True)
     assert ctrl._resume_pending is True
 
     # first poll: still opening -> no seek yet
@@ -159,7 +159,7 @@ def _make_window(qtbot):
     from desktop_music.ui.main_window import MainWindow
 
     backend = MagicMock()
-    backend.normalize = False
+    backend.compressor = False
     backend.get_state.return_value = PlaybackState.IDLE
     backend.get_time.return_value = 0
     backend.get_length.return_value = 0
@@ -173,20 +173,20 @@ def _make_window(qtbot):
     return window
 
 
-def test_window_has_checkable_normalizer_action(qtbot) -> None:
+def test_window_has_checkable_compressor_action(qtbot) -> None:
     window = _make_window(qtbot)
-    assert window._act_normalize is not None
-    assert window._act_normalize.isCheckable()
-    assert window._act_normalize.isChecked() is False
+    assert window._act_compressor is not None
+    assert window._act_compressor.isCheckable()
+    assert window._act_compressor.isChecked() is False
 
 
-def test_window_save_state_includes_normalize(qtbot) -> None:
+def test_window_save_state_includes_compressor(qtbot) -> None:
     window = _make_window(qtbot)
     window._settings.update = MagicMock()
     window._save_state()
     saved = window._settings.update.call_args[0][0]
-    assert "normalize" in saved
-    assert saved["normalize"] is False
+    assert "compressor" in saved
+    assert saved["compressor"] is False
 
 
 # -- end-to-end against real libVLC ---------------------------------------
@@ -215,7 +215,7 @@ def tone_wav(tmp_path) -> str:
 def test_real_backend_toggle_preserves_track_and_volume(tone_wav) -> None:
     ctrl = PlayerController()
     try:
-        assert ctrl.normalize is False
+        assert ctrl.compressor is False
         ctrl.open(tone_wav, autoplay=True)
         for _ in range(40):
             if ctrl.backend.get_state() == PlaybackState.PLAYING:
@@ -224,9 +224,9 @@ def test_real_backend_toggle_preserves_track_and_volume(tone_wav) -> None:
         ctrl.set_volume(63)
         old_backend = ctrl.backend
 
-        ctrl.toggle_normalize()
+        ctrl.toggle_compressor()
 
-        assert ctrl.normalize is True
+        assert ctrl.compressor is True
         assert ctrl.backend is not old_backend
         assert ctrl.backend.current_path == tone_wav
         assert ctrl.volume == 63

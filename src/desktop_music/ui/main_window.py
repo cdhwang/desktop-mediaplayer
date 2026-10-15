@@ -67,7 +67,7 @@ class MainWindow(QMainWindow):
         self._equalizer = EqualizerService(self._controller.backend)
         self._auto_hide_timer: QTimer | None = None
         # menu action created in _build_menu; declared here for early access
-        self._act_normalize = None
+        self._act_compressor = None
         # OSD stays suppressed until startup wiring + state restore finish, so
         # programmatic volume/rate changes on launch don't flash the overlay.
         self._osd_ready = False
@@ -279,12 +279,12 @@ class MainWindow(QMainWindow):
         act_eq = QAction("Equalizer\u2026", self)
         act_eq.triggered.connect(self.open_equalizer_dialog)
         pb_menu.addAction(act_eq)
-        # Audio normalizer (normvol) — checkable on/off toggle.
-        self._act_normalize = QAction("Audio Normalizer", self)
-        self._act_normalize.setCheckable(True)
-        self._act_normalize.setChecked(self._controller.normalize)
-        self._act_normalize.toggled.connect(self.toggle_normalize)
-        pb_menu.addAction(self._act_normalize)
+        # Audio compressor (dynamic range) — checkable on/off toggle.
+        self._act_compressor = QAction("Audio Compressor", self)
+        self._act_compressor.setCheckable(True)
+        self._act_compressor.setChecked(self._controller.compressor)
+        self._act_compressor.toggled.connect(self.toggle_compressor)
+        pb_menu.addAction(self._act_compressor)
 
         # -- Tools --
         tools_menu = QMenu("&Tools", self)
@@ -374,9 +374,9 @@ class MainWindow(QMainWindow):
         ctrl.rate_changed.connect(self._on_rate_osd)
         ctrl.play_mode_changed.connect(self._on_play_mode_changed)
         ctrl.media_changed.connect(self._on_media_changed)
-        ctrl.normalize_changed.connect(self._on_normalize_changed)
+        ctrl.compressor_changed.connect(self._on_compressor_changed)
 
-        # When the backend is rebuilt (normalizer toggle), re-point the
+        # When the backend is rebuilt (compressor toggle), re-point the
         # equalizer at the new player and re-attach video output.
         ctrl.set_backend_rebuilt_hook(self._on_backend_rebuilt)
 
@@ -560,16 +560,16 @@ class MainWindow(QMainWindow):
             return
         self._central_display.show_osd(f"Speed  {rate:.2f}x")
 
-    # -- audio normalizer --------------------------------------------------
+    # -- audio compressor --------------------------------------------------
 
-    def toggle_normalize(self, enabled: bool) -> None:
-        """Enable/disable the audio normalizer (from the menu action)."""
-        self._controller.set_normalize(enabled)
+    def toggle_compressor(self, enabled: bool) -> None:
+        """Enable/disable the audio compressor (from the menu action)."""
+        self._controller.set_compressor(enabled)
 
     def _on_backend_rebuilt(self, backend) -> None:
         """Re-wire services to a freshly created backend.
 
-        Called by the controller after it rebuilds the backend (normalizer
+        Called by the controller after it rebuilds the backend (compressor
         toggle). Re-points the equalizer and re-attaches video output if a
         video is currently showing.
         """
@@ -578,13 +578,13 @@ class MainWindow(QMainWindow):
             surface = self._central_display.video
             backend.set_video_window(surface.native_window_id())
 
-    def _on_normalize_changed(self, enabled: bool) -> None:
-        if hasattr(self, "_act_normalize") and self._act_normalize is not None:
-            self._act_normalize.setChecked(enabled)
+    def _on_compressor_changed(self, enabled: bool) -> None:
+        if hasattr(self, "_act_compressor") and self._act_compressor is not None:
+            self._act_compressor.setChecked(enabled)
         if not self._osd_ready:
             return
         self._central_display.show_osd(
-            "Normalizer  On" if enabled else "Normalizer  Off"
+            "Compressor  On" if enabled else "Compressor  Off"
         )
 
     def _on_media_changed(self, path) -> None:
@@ -694,14 +694,18 @@ class MainWindow(QMainWindow):
         eq_preset = data.get("eq_preset", PRESET_NONE)
         if isinstance(eq_preset, int):
             self._equalizer.apply_preset(eq_preset)
-        normalize = data.get("normalize")
-        if isinstance(normalize, bool) and normalize:
-            # Rebuild the backend with the normalizer enabled. The equalizer
-            # was just applied to the *current* backend; set_normalize's
+        # New key is "compressor"; fall back to the legacy "normalize" key so
+        # state files written before the normvol->compressor switch still work.
+        compressor = data.get("compressor")
+        if compressor is None:
+            compressor = data.get("normalize")
+        if isinstance(compressor, bool) and compressor:
+            # Rebuild the backend with the compressor enabled. The equalizer
+            # was just applied to the *current* backend; set_compressor's
             # rebuild hook re-applies it to the new one.
-            self._controller.set_normalize(True)
-        if self._act_normalize is not None:
-            self._act_normalize.setChecked(self._controller.normalize)
+            self._controller.set_compressor(True)
+        if self._act_compressor is not None:
+            self._act_compressor.setChecked(self._controller.compressor)
         self._shortcuts.load_state(data.get("shortcuts", {}))
         self._on_play_mode_changed()
 
@@ -712,7 +716,7 @@ class MainWindow(QMainWindow):
                 "play_mode": self._controller.play_mode.to_state(),
                 "volume": self._controller.volume,
                 "eq_preset": self._equalizer.preset_index,
-                "normalize": self._controller.normalize,
+                "compressor": self._controller.compressor,
                 "shortcuts": self._shortcuts.to_state(),
             }
         )
