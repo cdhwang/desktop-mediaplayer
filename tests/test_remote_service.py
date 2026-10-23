@@ -644,3 +644,94 @@ def test_claim_expires_after_timeout(svc, qtbot, monkeypatch):
     )
     assert status == 200
     assert controller.remote_mode is True
+
+
+# -- /api/audio is non-blocking (off-thread transcode) --------------------
+
+
+def test_audio_does_not_block_event_loop(qtbot, tmp_path, monkeypatch):
+    """A slow transcode must not freeze the GUI thread: while /api/audio is
+    still converting on a worker, a concurrent /api/ping returns promptly."""
+    import threading
+    import time as _time
+
+    from desktop_music.services.remote import transcode as tc
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_transcode(path, start_ms=0, end_ms=0, **kw):
+        started.set()
+        # Block the worker thread until the test lets it finish. If this ran
+        # on the GUI thread the event loop (and the ping below) would stall.
+        release.wait(timeout=5)
+        out = tmp_path / "out.mp3"
+        out.write_bytes(b"ID3fake-bytes")
+        return out
+
+    monkeypatch.setattr(tc, "transcode_to_mp3", slow_transcode)
+
+    src = tmp_path / "song.wav"
+    src.write_bytes(b"\x00")  # path only needs to exist for the handler
+    playlist = FakePlaylist(0)
+    playlist._tracks = [FakeTrack(str(src), "Song")]
+    playlist.current_index = 0
+    controller = FakeController(playlist)
+    service = RemoteService(controller, playlist, http_port=0)
+    assert service.start(QHostAddress(QHostAddress.SpecialAddress.LocalHost))
+    port = service.http_port
+
+    # Raw, non-blocking audio request pumped by the Qt event loop (same thread
+    # as the server). We send the bytes, then drive the loop while the worker
+    # transcodes, without waiting synchronously for this socket.
+    audio_sock = QTcpSocket()
+    audio_recv = bytearray()
+    audio_done = {"flag": False}
+    audio_sock.readyRead.connect(
+        lambda: audio_recv.extend(bytes(audio_sock.readAll().data()))
+    )
+
+    def _audio_disc():
+        audio_recv.extend(bytes(audio_sock.readAll().data()))
+        audio_done["flag"] = True
+
+    audio_sock.disconnected.connect(_audio_disc)
+    try:
+        audio_sock.connectToHost(
+            QHostAddress(QHostAddress.SpecialAddress.LocalHost), port
+        )
+        qtbot.waitUntil(
+            lambda: audio_sock.state() == QTcpSocket.SocketState.ConnectedState,
+            timeout=3000,
+        )
+        audio_sock.write(b"GET /api/audio/0 HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        audio_sock.flush()
+
+        # Pump the event loop until the worker thread is mid-transcode. If the
+        # transcode ran on the GUI thread this waitUntil could never succeed
+        # (the handler would block the loop before returning).
+        qtbot.waitUntil(lambda: started.is_set(), timeout=3000)
+
+        # The event loop must still service other requests right now. This is
+        # a synchronous round-trip; it only returns if the loop is free.
+        ping_start = _time.monotonic()
+        status, body = _request(qtbot, port, "GET", "/api/ping")
+        ping_elapsed = _time.monotonic() - ping_start
+        assert status == 200
+        assert json.loads(body)["ok"] is True
+        assert ping_elapsed < 2.0  # not serialized behind the transcode
+
+        # Let the transcode finish; the deferred response is then written.
+        release.set()
+        qtbot.waitUntil(
+            lambda: audio_done["flag"] or b"ID3fake-bytes" in bytes(audio_recv),
+            timeout=5000,
+        )
+        _head, _, payload = bytes(audio_recv).partition(b"\r\n\r\n")
+        assert b"200" in bytes(audio_recv).split(b"\r\n", 1)[0]
+        assert payload == b"ID3fake-bytes"
+    finally:
+        release.set()
+        audio_sock.close()
+        service.stop()
+

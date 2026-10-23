@@ -26,7 +26,7 @@ from typing import Optional
 import time
 import uuid
 
-from PyQt6.QtCore import QObject, QTimer
+from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QTimer
 from PyQt6.QtNetwork import QHostAddress
 
 from desktop_music.services.remote import state as rstate
@@ -69,6 +69,54 @@ _CLAIM_TIMEOUT_S = 6.0
 _CLAIM_SWEEP_MS = 2000
 
 
+class _TranscodeJob(QRunnable):
+    """Runs one transcode off the GUI thread and sends the HTTP response.
+
+    The actual ffmpeg call (``transcode_to_mp3``) blocks, so it runs on a
+    :class:`QThreadPool` worker instead of the GUI/event thread. Only pure
+    data (paths, ints) crosses the boundary; the response is delivered back
+    on the GUI thread via ``req.respond_later`` (a queued signal), which is
+    the only place the socket is touched.
+    """
+
+    def __init__(self, req: Request, path: str, start_ms: int, end_ms: int) -> None:
+        super().__init__()
+        self._req = req
+        self._path = path
+        self._start_ms = start_ms
+        self._end_ms = end_ms
+
+    def run(self) -> None:  # executed on a worker thread
+        # Imported lazily so the (ffmpeg-dependent) transcode stack is only
+        # pulled in when a browser actually requests audio.
+        from desktop_music.services.remote.transcode import (
+            TranscodeError,
+            transcode_to_mp3,
+        )
+
+        try:
+            mp3_path = transcode_to_mp3(self._path, self._start_ms, self._end_ms)
+        except TranscodeError as exc:
+            # 503: the source exists but we couldn't produce playable audio
+            # right now (ffmpeg missing or decode failure).
+            self._req.respond_later(
+                Response.error(503, f"transcode failed: {exc}")
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - never kill the worker thread
+            self._req.respond_later(
+                Response.error(500, f"transcode error: {exc}")
+            )
+            return
+        self._req.respond_later(
+            Response.file(
+                str(mp3_path),
+                "audio/mpeg",
+                headers={"Cache-Control": "no-store"},
+            )
+        )
+
+
 class RemoteService(QObject):
     """Owns the HTTP surface (REST API + remote page) and binds it to the player."""
 
@@ -85,6 +133,12 @@ class RemoteService(QObject):
         self._playlist = playlist
         self._http_port = http_port
         self._http = HttpServer(self)
+
+        # Dedicated pool for blocking transcode jobs so they never run on the
+        # GUI/event thread (which also owns the socket). Bounded so a flood of
+        # audio requests can't spawn unbounded ffmpeg processes.
+        self._pool = QThreadPool(self)
+        self._pool.setMaxThreadCount(2)
 
         # Audio-claim state. The desktop keeps its own audio by default; it
         # only hands audio to the browser (controller.set_remote_mode(True))
@@ -113,6 +167,11 @@ class RemoteService(QObject):
 
     def stop(self) -> None:
         self._claim_timer.stop()
+        # Wait for in-flight transcode workers to finish so their deferred
+        # responses don't fire against a torn-down HTTP server. Bounded wait
+        # so shutdown can't hang forever on a stuck ffmpeg.
+        self._pool.clear()  # drop queued-but-not-started jobs
+        self._pool.waitForDone(5000)
         # Release any outstanding claim so the desktop regains its audio when
         # the remote feature is turned off.
         self._release_claim()
@@ -214,10 +273,10 @@ class RemoteService(QObject):
         and show an accurate duration. Cue-sheet tracks are limited to their
         segment via the track's ``start_ms``/``end_ms``.
 
-        The transcode runs synchronously on the GUI thread. For a typical
-        song this takes a few seconds on first request; subsequent requests
-        (including the browser's own Range follow-ups) hit the cache and
-        return immediately.
+        The transcode blocks (it shells out to ffmpeg), so it is handed to a
+        background :class:`QThreadPool` worker and the response is deferred:
+        the GUI thread stays responsive while a first-time track converts.
+        A cache hit still runs on the worker but returns almost immediately.
         """
         raw_index = req.params.get("index", "")
         try:
@@ -235,26 +294,29 @@ class RemoteService(QObject):
         if not path:
             return Response.error(404, "track has no source file")
 
-        # Imported lazily so the (ffmpeg-dependent) transcode stack is only
-        # pulled in when a browser actually requests audio.
-        from desktop_music.services.remote.transcode import (
-            TranscodeError,
-            transcode_to_mp3,
-        )
-
         start_ms = int(getattr(track, "start_ms", 0) or 0)
         end_ms = int(getattr(track, "end_ms", 0) or 0)
-        try:
-            mp3_path = transcode_to_mp3(path, start_ms, end_ms)
-        except TranscodeError as exc:
-            # 503: the source exists but we couldn't produce playable audio
-            # right now (ffmpeg missing or decode failure).
-            return Response.error(503, f"transcode failed: {exc}")
-        return Response.file(
-            str(mp3_path),
-            "audio/mpeg",
-            headers={"Cache-Control": "no-store"},
-        )
+
+        # If the request can't be deferred (e.g. a unit-constructed Request
+        # with no responder), fall back to running inline so behaviour is
+        # still correct outside the live server.
+        if req.responder is None:
+            from desktop_music.services.remote.transcode import (
+                TranscodeError,
+                transcode_to_mp3,
+            )
+
+            try:
+                mp3_path = transcode_to_mp3(path, start_ms, end_ms)
+            except TranscodeError as exc:
+                return Response.error(503, f"transcode failed: {exc}")
+            return Response.file(
+                str(mp3_path), "audio/mpeg", headers={"Cache-Control": "no-store"}
+            )
+
+        # Hand off to a worker thread and defer the response.
+        self._pool.start(_TranscodeJob(req, path, start_ms, end_ms))
+        return Response.defer()
 
     def _h_command(self, req: Request) -> Response:
         command_id = req.params.get("id", "")

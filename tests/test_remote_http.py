@@ -298,3 +298,47 @@ def test_file_missing_404(server, qtbot, tmp_path):
     server.add_route("GET", "/f", lambda req: Response.file(str(missing), "audio/mpeg"))
     status, _, _ = _http_request_full(qtbot, server.port, "GET", "/f")
     assert status == 404
+
+
+# -- client aborts mid-stream (no UnconnectedState warnings, server stays up) --
+
+
+@pytest.fixture
+def big_file(tmp_path):
+    # Several 64 KiB chunks so _send_file loops and flushes multiple times,
+    # giving the client a window to abort mid-stream.
+    path = tmp_path / "big.bin"
+    data = bytes(range(256)) * (4096)  # ~1 MiB
+    path.write_bytes(data)
+    return path, data
+
+
+def test_client_abort_midstream_is_handled(server, qtbot, big_file):
+    """If the browser closes the connection partway through a Range stream,
+    the server must abandon the write quietly (no exception, no warning
+    storm) and keep serving subsequent requests."""
+    path, data = big_file
+    server.add_route("GET", "/big", lambda req: Response.file(str(path), "audio/mpeg"))
+
+    # Open the stream, read only a little, then slam the socket shut.
+    sock = QTcpSocket()
+    got = {"n": 0}
+    sock.readyRead.connect(lambda: got.__setitem__("n", got["n"] + len(bytes(sock.readAll().data()))))
+    sock.connectToHost(QHostAddress(QHostAddress.SpecialAddress.LocalHost), server.port)
+    qtbot.waitUntil(
+        lambda: sock.state() == QTcpSocket.SocketState.ConnectedState, timeout=3000
+    )
+    sock.write(b"GET /big HTTP/1.1\r\nHost: localhost\r\n\r\n")
+    sock.flush()
+    # Wait until at least some bytes have arrived, then abort.
+    qtbot.waitUntil(lambda: got["n"] > 0, timeout=3000)
+    sock.abort()
+    sock.close()
+
+    # Let the server notice the disconnect and unwind its send loop.
+    qtbot.wait(100)
+
+    # The server is still healthy: a fresh request succeeds.
+    status, _, body = _http_request_full(qtbot, server.port, "GET", "/big")
+    assert status == 200
+    assert body == data

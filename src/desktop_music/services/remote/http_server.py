@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, pyqtSignal
 from PyQt6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket
 
 # Maximum size we will buffer for a single request (headers + body), to avoid
@@ -46,6 +46,17 @@ class Request:
     headers: dict[str, str]         # lower-cased header names
     body: bytes
     params: dict[str, str] = field(default_factory=dict)  # matched path params
+    # Runtime-only hook, set by the server, that sends a later ("deferred")
+    # response for this request once background work completes. ``None`` when
+    # the request was constructed outside the server (e.g. in unit tests).
+    responder: Optional[Callable[["Response"], None]] = field(
+        default=None, repr=False, compare=False
+    )
+
+    def respond_later(self, response: "Response") -> None:
+        """Send a deferred response for this request (no-op if unavailable)."""
+        if self.responder is not None:
+            self.responder(response)
 
     def json(self) -> object:
         """Parse the body as JSON, returning ``None`` on empty/invalid body."""
@@ -74,6 +85,20 @@ class Response:
     body: bytes = b""
     headers: dict[str, str] = field(default_factory=dict)
     file_path: Optional[str] = None
+    # When True this is not a real response: the handler has taken ownership
+    # of the request and will send the actual response later (off-thread work
+    # completing on the GUI thread). The server leaves the socket open.
+    deferred: bool = False
+
+    @classmethod
+    def defer(cls) -> "Response":
+        """Sentinel telling the server the response will be sent later.
+
+        A handler returns this when it hands the request off to a background
+        worker; it must arrange to call :meth:`HttpServer.send_deferred` with
+        the originating socket once the real response is ready.
+        """
+        return cls(deferred=True)
 
     @classmethod
     def json(cls, data: object, status: int = 200) -> "Response":
@@ -131,14 +156,37 @@ class HttpServer(QObject):
 
     # emitted on bind failure with a human-readable reason
     error = pyqtSignal(str)
+    # Internal: carries a deferred (socket, response, request) back onto the
+    # GUI thread so the socket is only ever written from its owning thread.
+    # Payload types are ``object`` so PyQt doesn't try to marshal QTcpSocket.
+    _deferred = pyqtSignal(object, object, object)
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self._server = QTcpServer(self)
         self._server.newConnection.connect(self._on_new_connection)
+        # Deliver deferred responses on the GUI thread. A queued connection
+        # guarantees the slot runs in this object's thread even when emitted
+        # from a worker thread.
+        self._deferred.connect(
+            self._on_deferred, Qt.ConnectionType.QueuedConnection
+        )
         # routes: list of (method, segments, handler)
         self._routes: list[tuple[str, list[str], Handler]] = []
         self._port = 0
+
+    def _on_deferred(self, socket, response, request) -> None:
+        """Send a deferred response, re-entered on the GUI thread."""
+        # The client may have disconnected while the work was running.
+        try:
+            if socket is None:
+                return
+            if socket.state() != QTcpSocket.SocketState.ConnectedState:
+                return
+        except RuntimeError:
+            # socket (QObject) already deleted
+            return
+        self._send(socket, response, request)
 
     # -- routing -----------------------------------------------------------
 
@@ -247,7 +295,17 @@ class HttpServer(QObject):
             headers=headers,
             body=body,
         )
+        # Let a handler defer its response (e.g. off-thread transcoding). The
+        # responder re-enters the GUI thread via a queued signal so the socket
+        # is only ever written from the thread that owns it.
+        request.responder = lambda resp, s=socket, r=request: self._deferred.emit(
+            s, resp, r
+        )
         response = self._dispatch(request)
+        if response.deferred:
+            # The handler took ownership; keep the socket open until it calls
+            # request.respond_later(...).
+            return
         self._send(socket, response, request)
 
     def _dispatch(self, request: Request) -> Response:
@@ -298,6 +356,8 @@ class HttpServer(QObject):
         out += [f"{k}: {v}" for k, v in headers.items()]
         raw = ("\r\n".join(out) + "\r\n\r\n").encode("latin-1") + response.body
         try:
+            if socket.state() != QTcpSocket.SocketState.ConnectedState:
+                return
             socket.write(raw)
             socket.flush()
             socket.disconnectFromHost()
@@ -367,23 +427,38 @@ class HttpServer(QObject):
         header_blob = ("\r\n".join(out) + "\r\n\r\n").encode("latin-1")
 
         try:
+            if socket.state() != QTcpSocket.SocketState.ConnectedState:
+                return
             socket.write(header_blob)
             with open(path, "rb") as fh:
                 fh.seek(start)
                 remaining = content_length
                 chunk_size = 64 * 1024
                 while remaining > 0:
+                    # The browser routinely aborts an in-flight Range request
+                    # (seek, buffer full, element reload). Once the socket is
+                    # no longer connected, calling flush()/waitForBytesWritten
+                    # emits "not allowed in UnconnectedState" warnings, so bail
+                    # out as soon as the peer has gone away.
+                    if socket.state() != QTcpSocket.SocketState.ConnectedState:
+                        return
                     chunk = fh.read(min(chunk_size, remaining))
                     if not chunk:
                         break
-                    socket.write(chunk)
+                    if socket.write(chunk) == -1:
+                        return
                     # Flush periodically so Qt drains its write buffer and we
                     # don't accumulate the whole file in memory.
                     socket.flush()
+                    # Only block for the drain while still connected; a peer
+                    # disconnect between write() and here would otherwise warn.
+                    if socket.state() != QTcpSocket.SocketState.ConnectedState:
+                        return
                     socket.waitForBytesWritten(5000)
                     remaining -= len(chunk)
-            socket.flush()
-            socket.disconnectFromHost()
+            if socket.state() == QTcpSocket.SocketState.ConnectedState:
+                socket.flush()
+                socket.disconnectFromHost()
         except (RuntimeError, OSError):
             # socket closed mid-stream (browser aborted) or read error; ignore
             pass
