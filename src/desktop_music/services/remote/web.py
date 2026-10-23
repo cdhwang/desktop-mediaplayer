@@ -279,8 +279,14 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
     }).then(function (s) {
       if (!s) return;
       claimed = true;
+      // The browser is now the audio source. Start from an unmuted <audio>
+      // so the mute button reflects the browser, not the (always-muted)
+      // desktop backend.
+      audio.muted = false;
+      muted = false;
       setListenNote("");
       updateListenButton();
+      updateMuteButton();
       applyState(s);
       // Load whatever the desktop considers current and start playing.
       if (typeof s.current_index === "number" && s.current_index >= 0) {
@@ -451,8 +457,16 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
       userVolume = Math.max(0, Math.min(1, s.volume / 100));
       audio.volume = userVolume;
     }
-    muted = !!s.muted;
-    audio.muted = muted;
+    // While this browser is the audio source (claimed), the desktop backend
+    // is intentionally muted -- that is NOT the browser's mute state. Ignore
+    // the desktop's mute here and keep the local <audio> as the source of
+    // truth. Only mirror the desktop mute when we are not the audio source.
+    if (!claimed) {
+      muted = !!s.muted;
+      audio.muted = muted;
+    } else {
+      muted = audio.muted;
+    }
     updateMuteButton();
 
     $("btnShuffle").classList.toggle("toggled", !!s.shuffle);
@@ -591,7 +605,12 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
     muted = !muted;
     audio.muted = muted;
     updateMuteButton();
-    command("mute");  // keep the desktop's mute state in sync
+    // When this browser owns the audio, the desktop stays muted regardless
+    // (remote mode); toggling its mute would leak sound from the desktop.
+    // Only forward the mute command when the desktop is the audio source.
+    if (!claimed) {
+      command("mute");
+    }
   });
   $("btnShuffle").addEventListener("click", function () { command("toggle_shuffle"); });
   $("btnRepeat").addEventListener("click", function () { command("cycle_repeat"); });
