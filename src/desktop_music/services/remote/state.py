@@ -13,10 +13,62 @@ on, so they are documented inline.
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Optional
 
 # These imports are only used for isinstance-free value normalization and to
 # avoid a hard dependency cycle; the functions accept duck-typed objects.
+
+
+def _track_has_cover(track: Any) -> bool:
+    """Best-effort check for whether *track* can provide cover art.
+
+    This is intentionally cheap: it only checks that the backing file exists
+    and is a readable path. The actual (more expensive) extraction happens
+    lazily when the browser requests ``/api/cover/{index}``.
+    """
+    if track is None:
+        return False
+    path = getattr(track, "path", "") or ""
+    return bool(path) and os.path.isfile(path)
+
+
+def track_cover_bytes(track: Any) -> Optional[tuple[bytes, str]]:
+    """Extract cover-art bytes + content-type for *track*.
+
+    Returns ``(data, content_type)`` or ``None`` when no art is available.
+    The content type is sniffed from the leading image magic bytes so the
+    browser can render it without a separate type tag.
+    """
+    if track is None:
+        return None
+    path = getattr(track, "path", "") or ""
+    if not path or not os.path.isfile(path):
+        return None
+
+    # Imported lazily to keep this module free of a hard mutagen dependency
+    # at import time and to avoid a service<->service import cycle.
+    from desktop_music.services.metadata import read_metadata
+
+    meta = read_metadata(path)
+    data = getattr(meta, "cover_art", None)
+    if not data:
+        return None
+    return bytes(data), _sniff_image_type(bytes(data))
+
+
+def _sniff_image_type(data: bytes) -> str:
+    """Return an image MIME type guessed from *data*'s magic bytes."""
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:2] == b"BM":
+        return "image/bmp"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "application/octet-stream"
 
 
 def _enum_value(obj: Any, default: str = "") -> str:
@@ -56,6 +108,7 @@ def build_track(track: Any, index: int, *, playing: bool) -> dict[str, Any]:
           "duration_ms": int,
           "playing": bool,       # True for the current (now-playing) row
           "is_cue_track": bool,
+          "has_cover": bool,     # True when album art is available
         }
     """
     return {
@@ -66,6 +119,7 @@ def build_track(track: Any, index: int, *, playing: bool) -> dict[str, Any]:
         "duration_ms": int(getattr(track, "duration_ms", 0) or 0),
         "playing": bool(playing),
         "is_cue_track": bool(getattr(track, "is_cue_track", False)),
+        "has_cover": _track_has_cover(track),
     }
 
 

@@ -101,6 +101,7 @@ class RemoteService(QObject):
         add("GET", "/api/ping", self._h_ping)
         add("GET", "/api/state", self._h_state)
         add("GET", "/api/playlist", self._h_playlist)
+        add("GET", "/api/cover/{index}", self._h_cover)
         add("POST", "/api/command/{id}", self._h_command)
         add("POST", "/api/volume", self._h_volume)
         add("POST", "/api/seek", self._h_seek)
@@ -124,6 +125,39 @@ class RemoteService(QObject):
 
     def _h_playlist(self, _req: Request) -> Response:
         return Response.json(rstate.build_playlist(self._playlist))
+
+    def _h_cover(self, req: Request) -> Response:
+        """Serve the album art for a playlist track as a raw image.
+
+        ``GET /api/cover/{index}`` returns the cover-art bytes for the track
+        at *index* with the sniffed image Content-Type, or 404 when the track
+        has no art. The response is marked cacheable so the browser only
+        fetches each cover once.
+        """
+        raw_index = req.params.get("index", "")
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            return Response.error(400, "index must be an integer")
+        track = (
+            self._playlist.track_at(index)
+            if self._playlist is not None and hasattr(self._playlist, "track_at")
+            else None
+        )
+        if track is None:
+            return Response.error(404, "track not found")
+        cover = rstate.track_cover_bytes(track)
+        if cover is None:
+            return Response.error(404, "no cover art")
+        data, content_type = cover
+        return Response(
+            status=200,
+            body=data,
+            headers={
+                "Content-Type": content_type,
+                "Cache-Control": "public, max-age=3600",
+            },
+        )
 
     def _h_command(self, req: Request) -> Response:
         command_id = req.params.get("id", "")

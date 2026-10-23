@@ -267,3 +267,74 @@ def test_serves_remote_page_at_remote(svc, qtbot):
     status, body = _request(qtbot, service.http_port, "GET", "/remote")
     assert status == 200
     assert b"</html>" in body
+
+
+def test_cover_404_when_no_art(svc, qtbot):
+    # FakeTrack paths are not real files, so no cover is available.
+    service, _, _ = svc
+    status, body = _request(qtbot, service.http_port, "GET", "/api/cover/0")
+    assert status == 404
+    assert "no cover art" in json.loads(body)["error"]
+
+
+def test_cover_404_when_index_out_of_range(svc, qtbot):
+    service, _, _ = svc
+    status, body = _request(qtbot, service.http_port, "GET", "/api/cover/99")
+    assert status == 404
+    assert "track not found" in json.loads(body)["error"]
+
+
+def test_cover_400_when_index_not_integer(svc, qtbot):
+    service, _, _ = svc
+    status, body = _request(qtbot, service.http_port, "GET", "/api/cover/abc")
+    assert status == 400
+    assert "integer" in json.loads(body)["error"]
+
+
+def test_cover_200_with_embedded_art(qtbot, tmp_path):
+    import math
+    import struct
+    import wave
+
+    from mutagen.wave import WAVE
+    from mutagen.id3 import APIC
+
+    from PyQt6.QtCore import QBuffer, QByteArray
+    from PyQt6.QtGui import QColor, QImage
+
+    img = QImage(4, 4, QImage.Format.Format_RGB32)
+    img.fill(QColor(200, 100, 50))
+    ba = QByteArray()
+    buf = QBuffer(ba)
+    buf.open(QBuffer.OpenModeFlag.WriteOnly)
+    img.save(buf, "PNG")
+    png = bytes(ba.data())
+
+    path = tmp_path / "song.wav"
+    rate = 8000
+    with wave.open(str(path), "w") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        frames = bytearray()
+        for i in range(rate // 4):
+            frames += struct.pack("<h", int(10000 * math.sin(2 * math.pi * 440 * i / rate)))
+        w.writeframes(bytes(frames))
+    audio = WAVE(str(path))
+    if audio.tags is None:
+        audio.add_tags()
+    audio.tags.add(APIC(encoding=3, mime="image/png", type=3, desc="", data=png))
+    audio.save()
+
+    playlist = FakePlaylist(0)
+    playlist._tracks = [FakeTrack(str(path), "Song")]
+    playlist.current_index = 0
+    controller = FakeController(playlist)
+    service = RemoteService(controller, playlist, http_port=0)
+    assert service.start(QHostAddress(QHostAddress.SpecialAddress.LocalHost))
+    try:
+        status, body = _request(qtbot, service.http_port, "GET", "/api/cover/0")
+        assert status == 200
+        assert body == png
+    finally:
+        service.stop()

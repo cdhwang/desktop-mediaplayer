@@ -111,6 +111,7 @@ def test_build_track_basic():
         "duration_ms": 1234,
         "playing": True,
         "is_cue_track": False,
+        "has_cover": False,
     }
 
 
@@ -185,3 +186,77 @@ def test_build_state_snapshot_defaults_playlist_from_controller():
     # Do not pass playlist explicitly; it should be read from controller.
     snap = rstate.build_state_snapshot(ctrl)
     assert snap["current"]["title"] == "A"
+
+
+# -- cover art -------------------------------------------------------------
+
+
+def test_track_has_cover_false_for_missing_file():
+    t = FakeTrack("/does/not/exist.mp3")
+    d = rstate.build_track(t, 0, playing=False)
+    assert d["has_cover"] is False
+
+
+def test_track_has_cover_false_for_none():
+    assert rstate._track_has_cover(None) is False
+
+
+def test_track_cover_bytes_none_for_missing_file():
+    t = FakeTrack("/does/not/exist.mp3")
+    assert rstate.track_cover_bytes(t) is None
+
+
+def test_sniff_image_type():
+    assert rstate._sniff_image_type(b"\xff\xd8\xff\xe0rest") == "image/jpeg"
+    assert rstate._sniff_image_type(b"\x89PNG\r\n\x1a\nrest") == "image/png"
+    assert rstate._sniff_image_type(b"GIF89a....") == "image/gif"
+    assert rstate._sniff_image_type(b"BMxxxx") == "image/bmp"
+    assert rstate._sniff_image_type(b"RIFF????WEBPxxxx") == "image/webp"
+    assert rstate._sniff_image_type(b"garbage") == "application/octet-stream"
+
+
+def test_track_has_cover_and_bytes_with_real_png(tmp_path):
+    # A WAV with an embedded APIC frame; has_cover should be True and the
+    # extracted bytes should round-trip with a PNG content type.
+    import math
+    import struct
+    import wave
+
+    from mutagen.wave import WAVE
+    from mutagen.id3 import APIC
+
+    from PyQt6.QtCore import QBuffer, QByteArray
+    from PyQt6.QtGui import QColor, QImage
+
+    img = QImage(4, 4, QImage.Format.Format_RGB32)
+    img.fill(QColor(10, 20, 30))
+    ba = QByteArray()
+    buf = QBuffer(ba)
+    buf.open(QBuffer.OpenModeFlag.WriteOnly)
+    img.save(buf, "PNG")
+    png = bytes(ba.data())
+
+    path = tmp_path / "song.wav"
+    rate = 8000
+    with wave.open(str(path), "w") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        frames = bytearray()
+        for i in range(rate // 4):
+            frames += struct.pack("<h", int(10000 * math.sin(2 * math.pi * 440 * i / rate)))
+        w.writeframes(bytes(frames))
+
+    audio = WAVE(str(path))
+    if audio.tags is None:
+        audio.add_tags()
+    audio.tags.add(APIC(encoding=3, mime="image/png", type=3, desc="", data=png))
+    audio.save()
+
+    t = FakeTrack(str(path))
+    assert rstate._track_has_cover(t) is True
+    result = rstate.track_cover_bytes(t)
+    assert result is not None
+    data, content_type = result
+    assert data == png
+    assert content_type == "image/png"

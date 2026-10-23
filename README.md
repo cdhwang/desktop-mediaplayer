@@ -57,11 +57,13 @@ http://<desktop-ip>:8787/
 ```
 
 (replace `<desktop-ip>` with the machine's LAN IP, e.g. `192.168.1.20`). The
-page shows the playlist and the current track, and lets you play/pause, skip,
-change volume, mute, toggle shuffle/repeat, seek, and tap a track to play it.
-It refreshes by polling, so no extra app or configuration is needed. There is
-no authentication, so only enable it on networks you trust. The on/off choice
-is remembered between sessions.
+page shows the playlist and the current track (with album art), and lets you
+play/pause, skip, change volume, mute, toggle shuffle/repeat, seek, and tap a
+track to play it. Album art is served per track and displayed both for the
+now-playing item and as a thumbnail in the playlist. It refreshes by polling,
+so no extra app or configuration is needed. There is no authentication, so
+only enable it on networks you trust. The on/off choice is remembered between
+sessions.
 
 ## Test
 

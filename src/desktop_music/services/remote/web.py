@@ -46,6 +46,13 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   .conn.bad { color: #e67e7e; }
   .now-title { font-size: 18px; font-weight: 600; margin-top: 4px; word-break: break-word; }
   .now-sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
+  .now-cover-wrap { display: flex; justify-content: center; margin-top: 12px; }
+  .now-cover {
+    width: 180px; height: 180px; border-radius: 12px; object-fit: cover;
+    background: var(--panel2); border: 1px solid var(--border);
+    display: none;
+  }
+  .now-cover.show { display: block; }
   .seek-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
   .time { font-size: 12px; color: var(--muted); width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
   input[type=range] { width: 100%; accent-color: var(--accent); }
@@ -71,6 +78,10 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   .track:active { background: var(--panel2); }
   .track.playing { background: var(--playing); border-color: var(--accent2); }
   .track .idx { color: var(--muted); width: 26px; text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; }
+  .track .thumb {
+    width: 40px; height: 40px; border-radius: 6px; object-fit: cover;
+    background: var(--panel2); flex: 0 0 auto;
+  }
   .track .meta { flex: 1; min-width: 0; }
   .track .t { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .track .a { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -84,6 +95,9 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
     <div class="conn" id="conn">connecting…</div>
     <div class="now-title" id="nowTitle">—</div>
     <div class="now-sub" id="nowSub"></div>
+    <div class="now-cover-wrap">
+      <img class="now-cover" id="nowCover" alt="">
+    </div>
     <div class="seek-row">
       <span class="time" id="curTime">0:00</span>
       <input type="range" id="seek" min="0" max="1000" value="0">
@@ -189,6 +203,24 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
                         : "🔁 Repeat";
     $("btnPlay").textContent = s.state === "playing" ? "⏸" : "▶";
     highlightPlaying(s.current_index);
+    updateNowCover(cur, s.current_index);
+  }
+
+  function updateNowCover(cur, idx) {
+    var img = $("nowCover");
+    if (cur && cur.has_cover && idx >= 0) {
+      var src = "/api/cover/" + idx;
+      // Avoid flicker: only swap the source when the track changed.
+      if (img.getAttribute("data-idx") !== String(idx)) {
+        img.setAttribute("data-idx", String(idx));
+        img.src = src;
+      }
+      img.classList.add("show");
+    } else {
+      img.classList.remove("show");
+      img.removeAttribute("src");
+      img.removeAttribute("data-idx");
+    }
   }
 
   function highlightPlaying(idx) {
@@ -202,7 +234,7 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   function renderPlaylist(pl) {
     if (!pl) return;
     // Cheap change detection so we don't rebuild the DOM every poll.
-    var sig = pl.count + ":" + pl.tracks.map(function (t) { return t.title; }).join("|");
+    var sig = pl.count + ":" + pl.tracks.map(function (t) { return t.title + (t.has_cover ? "*" : ""); }).join("|");
     if (sig === lastPlaylistSig) {
       highlightPlaying(pl.current_index);
       return;
@@ -217,6 +249,13 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
       var idx = document.createElement("div");
       idx.className = "idx";
       idx.textContent = (t.index + 1);
+      var thumb = null;
+      if (t.has_cover) {
+        thumb = document.createElement("img");
+        thumb.className = "thumb";
+        thumb.alt = "";
+        thumb.src = "/api/cover/" + t.index;
+      }
       var meta = document.createElement("div");
       meta.className = "meta";
       var title = document.createElement("div");
@@ -233,6 +272,7 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
       dur.className = "dur";
       dur.textContent = t.duration_ms ? fmt(t.duration_ms) : "";
       row.appendChild(idx);
+      if (thumb) row.appendChild(thumb);
       row.appendChild(meta);
       row.appendChild(dur);
       row.addEventListener("click", function () {
