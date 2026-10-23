@@ -269,16 +269,25 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token: audioToken })
     }).then(function (r) {
-      claimPending = false;
+      // NOTE: do not clear claimPending here. Keeping it set until we have
+      // either taken the claim (claimed=true) or definitively failed closes
+      // the window where a concurrent poll could latch the desktop's mute
+      // onto <audio> between "request done" and "claim applied".
       if (r.status === 409) {
+        claimPending = false;
         setListenNote("Another device is already listening.", true);
         return null;
       }
-      if (!r.ok) { setListenNote("Could not start listening.", true); return null; }
+      if (!r.ok) {
+        claimPending = false;
+        setListenNote("Could not start listening.", true);
+        return null;
+      }
       return r.json();
     }).then(function (s) {
       if (!s) return;
       claimed = true;
+      claimPending = false;
       // The browser is now the audio source. Start from an unmuted <audio>
       // so the mute button reflects the browser, not the (always-muted)
       // desktop backend.
@@ -460,8 +469,11 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
     // While this browser is the audio source (claimed), the desktop backend
     // is intentionally muted -- that is NOT the browser's mute state. Ignore
     // the desktop's mute here and keep the local <audio> as the source of
-    // truth. Only mirror the desktop mute when we are not the audio source.
-    if (!claimed) {
+    // truth. Also ignore it while a claim is in flight (claimPending), to
+    // avoid a race where a poll arriving mid-claim latches the desktop's mute
+    // onto <audio> and never clears it. Only mirror the desktop mute when we
+    // are plainly the controller (no claim held or pending).
+    if (!claimed && !claimPending) {
       muted = !!s.muted;
       audio.muted = muted;
     } else {

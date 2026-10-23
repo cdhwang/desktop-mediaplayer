@@ -735,3 +735,19 @@ def test_audio_does_not_block_event_loop(qtbot, tmp_path, monkeypatch):
         audio_sock.close()
         service.stop()
 
+
+
+# -- remote page must not be cached (so UI fixes take effect) -------------
+
+
+def test_remote_page_is_not_cached(svc):
+    """The inline HTML+JS page changes with app updates; it must be served
+    with a no-store Cache-Control so browsers don't keep running old JS."""
+    from desktop_music.services.remote.http_server import Request
+
+    service, _, _ = svc
+    req = Request(method="GET", path="/", query={}, headers={}, body=b"")
+    resp = service._h_page(req)
+    assert resp.status == 200
+    cc = resp.headers.get("Cache-Control", "")
+    assert "no-store" in cc

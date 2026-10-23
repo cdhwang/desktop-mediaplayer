@@ -217,7 +217,13 @@ class RemoteService(QObject):
         return Response(
             status=200,
             body=REMOTE_PAGE_HTML.encode("utf-8"),
-            headers={"Content-Type": "text/html; charset=utf-8"},
+            headers={
+                "Content-Type": "text/html; charset=utf-8",
+                # The page is a single inline HTML+JS blob that changes with
+                # app updates; never let the browser serve a stale copy, or
+                # fixes to the remote UI won't take effect until a hard reload.
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+            },
         )
 
     def _h_ping(self, _req: Request) -> Response:
