@@ -82,6 +82,11 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   button.wide { flex: 1; }
   button.primary { background: var(--accent); border-color: var(--accent); font-weight: 600; }
   button.toggled { border-color: var(--accent); color: var(--accent); }
+  /* Muted is a distinct, filled "warning" state so it's obvious at a glance
+     and not confused with the accent-outline of shuffle/repeat toggles. */
+  button#btnMute.muted {
+    background: #5a2730; border-color: #e67e7e; color: #ffd9d9; font-weight: 600;
+  }
   .vol-row { display: flex; align-items: center; gap: 10px; }
   .vol-row input[type=range] { flex: 1; }
   .vol-val { width: 42px; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
@@ -146,7 +151,7 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
       <span class="vol-val" id="volVal">100</span>
     </div>
     <div class="row">
-      <button id="btnMute" class="wide" title="Mute">🔇 Mute</button>
+      <button id="btnMute" class="wide" title="Mute">🔊 Sound on</button>
       <button id="btnShuffle" class="wide" title="Shuffle">🔀 Shuffle</button>
       <button id="btnRepeat" class="wide" title="Repeat">🔁 Repeat</button>
     </div>
@@ -237,6 +242,16 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
     var el = $("listenNote");
     el.textContent = msg || "";
     el.className = "listen-note" + (bad ? " bad" : "");
+  }
+
+  // Reflect the current mute state on the button with a clear icon + label
+  // and a distinct "muted" style, so it's unambiguous whether sound is off.
+  function updateMuteButton() {
+    var btn = $("btnMute");
+    btn.classList.toggle("muted", muted);
+    btn.textContent = muted ? "🔇 Muted" : "🔊 Sound on";
+    btn.setAttribute("aria-pressed", muted ? "true" : "false");
+    btn.setAttribute("title", muted ? "Unmute" : "Mute");
   }
 
   function updateListenButton() {
@@ -438,7 +453,7 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
     }
     muted = !!s.muted;
     audio.muted = muted;
-    $("btnMute").classList.toggle("toggled", muted);
+    updateMuteButton();
 
     $("btnShuffle").classList.toggle("toggled", !!s.shuffle);
     var rep = s.repeat || "none";
@@ -575,7 +590,7 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   $("btnMute").addEventListener("click", function () {
     muted = !muted;
     audio.muted = muted;
-    $("btnMute").classList.toggle("toggled", muted);
+    updateMuteButton();
     command("mute");  // keep the desktop's mute state in sync
   });
   $("btnShuffle").addEventListener("click", function () { command("toggle_shuffle"); });
@@ -619,6 +634,7 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   pollState();
   pollPlaylist();
   updateListenButton();
+  updateMuteButton();
   setInterval(pollState, 1000);
   setInterval(pollPlaylist, 3000);
   // Report our playback position to the desktop a few times a second.
