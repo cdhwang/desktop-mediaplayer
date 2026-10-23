@@ -116,6 +116,7 @@ _STATUS_TEXT = {
     400: "Bad Request",
     404: "Not Found",
     405: "Method Not Allowed",
+    409: "Conflict",
     413: "Payload Too Large",
     416: "Range Not Satisfiable",
     500: "Internal Server Error",

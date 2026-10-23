@@ -983,21 +983,20 @@ class MainWindow(QMainWindow):
             self._act_remote.blockSignals(True)
             self._act_remote.setChecked(True)
             self._act_remote.blockSignals(False)
-        # Browser-playback mode: mute the desktop and load-only (the browser
-        # becomes the sole audio source). Guarded so older/mocked controllers
-        # without the method don't break startup.
-        if hasattr(self._controller, "set_remote_mode"):
-            self._controller.set_remote_mode(True)
+        # The desktop keeps its own audio: enabling the remote service only
+        # exposes *control* over the LAN. Browser-playback mode (mute the
+        # desktop, load-only, browser as the sole audio source) is entered
+        # lazily, and only when a browser *explicitly* claims the audio via
+        # POST /api/audio/claim -- handled inside RemoteService.
         return True
 
     def stop_remote(self) -> None:
         """Stop the remote-control service if running."""
         if self._remote is None:
             return
-        # Restore normal desktop playback (unmute, allow auto-play) before
-        # tearing the service down.
-        if hasattr(self._controller, "set_remote_mode"):
-            self._controller.set_remote_mode(False)
+        # service.stop() releases any outstanding audio claim, which restores
+        # normal desktop playback (unmute, allow auto-play) if the browser had
+        # taken over the audio.
         self._remote.stop()
         self._remote.deleteLater()
         self._remote = None

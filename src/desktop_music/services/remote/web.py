@@ -108,6 +108,8 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   }
   .track .del:hover, .track .del:active { color: #e67e7e; border-color: var(--border); background: var(--panel2); }
   .eq { color: var(--accent); font-size: 14px; }
+  .listen-note { font-size: 12px; color: var(--muted); text-align: center; min-height: 16px; padding: 2px 8px; }
+  .listen-note.bad { color: #e67e7e; }
   .section-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; padding: 8px 12px 2px; }
 </style>
 </head>
@@ -148,6 +150,10 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
       <button id="btnShuffle" class="wide" title="Shuffle">🔀 Shuffle</button>
       <button id="btnRepeat" class="wide" title="Repeat">🔁 Repeat</button>
     </div>
+    <div class="row">
+      <button id="btnListen" class="wide" title="Play the audio in this browser">🎧 Listen here</button>
+    </div>
+    <div class="listen-note" id="listenNote"></div>
   </div>
 
   <div class="section-label">Playlist</div>
@@ -167,6 +173,21 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   var userVolume = 1.0;      // 0..1, applied to the <audio> element
   var muted = false;
   var loading = false;       // transcode/buffering in progress
+
+  // Audio-claim state. The desktop keeps its own audio until this browser
+  // explicitly claims it via the "Listen here" toggle. Only when `claimed`
+  // is true does this browser load/play audio and report heartbeats. The
+  // token identifies this browser's claim to the desktop (single holder).
+  var claimed = false;
+  var audioToken = null;
+  var claimPending = false;  // a claim/release request is in flight
+
+  function genToken() {
+    try {
+      if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+    } catch (e) {}
+    return "c" + Date.now().toString(36) + Math.random().toString(36).slice(2);
+  }
 
   function fmt(ms) {
     ms = Math.max(0, ms | 0);
@@ -210,6 +231,76 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
     else { el.textContent = "disconnected — retrying…"; el.className = "conn bad"; }
   }
 
+  // -- audio claim: take/relinquish the desktop audio ---------------------
+
+  function setListenNote(msg, bad) {
+    var el = $("listenNote");
+    el.textContent = msg || "";
+    el.className = "listen-note" + (bad ? " bad" : "");
+  }
+
+  function updateListenButton() {
+    var btn = $("btnListen");
+    btn.classList.toggle("toggled", claimed);
+    btn.textContent = claimed ? "🎧 Listening here" : "🎧 Listen here";
+  }
+
+  function claimAudio() {
+    if (claimPending || claimed) return;
+    claimPending = true;
+    if (!audioToken) audioToken = genToken();
+    fetch("/api/audio/claim", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: audioToken })
+    }).then(function (r) {
+      claimPending = false;
+      if (r.status === 409) {
+        setListenNote("Another device is already listening.", true);
+        return null;
+      }
+      if (!r.ok) { setListenNote("Could not start listening.", true); return null; }
+      return r.json();
+    }).then(function (s) {
+      if (!s) return;
+      claimed = true;
+      setListenNote("");
+      updateListenButton();
+      applyState(s);
+      // Load whatever the desktop considers current and start playing.
+      if (typeof s.current_index === "number" && s.current_index >= 0) {
+        loadIndex(s.current_index, true, trackSig(s.current));
+      }
+    }).catch(function () {
+      claimPending = false;
+      setListenNote("Could not start listening.", true);
+    });
+  }
+
+  function releaseAudio(useBeacon) {
+    if (!audioToken) { claimed = false; updateListenButton(); return; }
+    var body = JSON.stringify({ token: audioToken });
+    // On page unload, a beacon survives the teardown; otherwise use fetch.
+    if (useBeacon && navigator.sendBeacon) {
+      try { navigator.sendBeacon("/api/audio/release", new Blob([body], { type: "application/json" })); } catch (e) {}
+    } else {
+      fetch("/api/audio/release", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: body
+      }).catch(function () {});
+    }
+    claimed = false;
+    audio.pause();
+    setListenNote("");
+    updateListenButton();
+  }
+
+  function toggleListen() {
+    if (claimed) releaseAudio(false);
+    else claimAudio();
+  }
+
   // -- audio element: load / transport ------------------------------------
 
   // A stable identity for a track, independent of its playlist index. Used
@@ -223,6 +314,9 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
 
   function loadIndex(index, autoplay, sig) {
     if (index < 0) return;
+    // Only this browser loads/plays audio while it holds the claim. Without
+    // a claim the desktop is the audio source, so stay silent.
+    if (!claimed) return;
     loadedIndex = index;
     loadedSig = sig || "";
     loading = true;
@@ -236,6 +330,12 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   }
 
   function togglePlay() {
+    // When this browser is not the audio source, the play/pause button
+    // controls the *desktop's* playback instead of the local <audio>.
+    if (!claimed) {
+      command("play_pause");
+      return;
+    }
     if (loadedIndex < 0) {
       // Nothing loaded yet: load whatever the desktop considers current.
       api("/api/state").then(function (s) {
@@ -256,11 +356,15 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   // Report the browser's own playback position/state to the desktop so its
   // UI mirrors what the listener actually hears.
   function reportState() {
+    // Only the audio holder reports position/state; this doubles as the
+    // claim heartbeat, so it must carry the token.
+    if (!claimed || !audioToken) return;
     var state = loading ? "buffering"
               : audio.ended ? "ended"
               : audio.paused ? "paused"
               : "playing";
     postQuiet("/api/remote/state", {
+      token: audioToken,
       position_ms: Math.round((audio.currentTime || 0) * 1000),
       length_ms: Math.round((isFinite(audio.duration) ? audio.duration : 0) * 1000),
       state: state
@@ -345,6 +449,20 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
                         : "🔁 Repeat";
     highlightPlaying(s.current_index);
     updateNowCover(cur, s.current_index);
+
+    // Keep the claim UI in sync with the desktop. If the server expired our
+    // claim (e.g. our heartbeat lapsed and it reclaimed audio), reflect that.
+    if (claimed && s.remote_mode === false) {
+      claimed = false;
+      audio.pause();
+      updateListenButton();
+      setListenNote("Another device took over, or the claim expired.", true);
+    }
+    // When we are not the audio source, mirror the desktop's play state on
+    // the play button (we don't drive a local <audio> in that mode).
+    if (!claimed) {
+      $("btnPlay").textContent = (s.state === "playing") ? "⏸" : "▶";
+    }
   }
 
   function updateNowCover(cur, idx) {
@@ -462,6 +580,12 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   });
   $("btnShuffle").addEventListener("click", function () { command("toggle_shuffle"); });
   $("btnRepeat").addEventListener("click", function () { command("cycle_repeat"); });
+  $("btnListen").addEventListener("click", toggleListen);
+
+  // Relinquish the audio claim when the page goes away so the desktop
+  // reclaims its own audio promptly (the server also expires stale claims).
+  window.addEventListener("pagehide", function () { if (claimed) releaseAudio(true); });
+  window.addEventListener("beforeunload", function () { if (claimed) releaseAudio(true); });
 
   var seek = $("seek");
   seek.addEventListener("input", function () { seeking = true; });
@@ -494,6 +618,7 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
 
   pollState();
   pollPlaylist();
+  updateListenButton();
   setInterval(pollState, 1000);
   setInterval(pollPlaylist, 3000);
   // Report our playback position to the desktop a few times a second.

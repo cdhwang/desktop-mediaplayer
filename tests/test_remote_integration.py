@@ -104,14 +104,54 @@ def test_toggle_action_reflects_state(window, qtbot):
     assert window.remote_enabled is False
 
 
-def test_start_remote_enables_controller_remote_mode(window):
-    """Starting the service puts the controller into browser-playback mode
-    (muted, load-only); stopping it restores normal desktop playback."""
+def _post_req(path, body):
+    from desktop_music.services.remote.http_server import Request
+
+    return Request(
+        method="POST", path=path, query={}, headers={},
+        body=body.encode("utf-8") if isinstance(body, str) else body,
+    )
+
+
+def test_start_remote_does_not_claim_audio(window):
+    """Starting the service only exposes *control*: the desktop keeps its own
+    audio (not muted, not in browser-playback mode) until a browser claims it.
+    """
     controller = window._controller
     assert controller.remote_mode is False
     assert window.start_remote() is True
+    # No claim yet -> desktop still owns the audio.
+    assert controller.remote_mode is False
+    window.stop_remote()
+    assert controller.remote_mode is False
+
+
+def test_browser_claim_enters_remote_mode(window):
+    """An explicit audio claim puts the controller into browser-playback mode
+    (muted, load-only); releasing it restores normal desktop playback."""
+    controller = window._controller
+    assert window.start_remote() is True
+    service = window.remote
+
+    resp = service._h_audio_claim(_post_req("/api/audio/claim", '{"token": "abc"}'))
+    assert resp.status == 200
     assert controller.remote_mode is True
     assert controller.backend.is_muted() is True
+
+    resp = service._h_audio_release(_post_req("/api/audio/release", '{"token": "abc"}'))
+    assert resp.status == 200
+    assert controller.remote_mode is False
+    assert controller.backend.is_muted() is False
+
+
+def test_stop_remote_releases_claim(window):
+    """Turning the remote feature off releases any outstanding claim so the
+    desktop reclaims its audio."""
+    controller = window._controller
+    assert window.start_remote() is True
+    service = window.remote
+    service._h_audio_claim(_post_req("/api/audio/claim", '{"token": "abc"}'))
+    assert controller.remote_mode is True
     window.stop_remote()
     assert controller.remote_mode is False
     assert controller.backend.is_muted() is False

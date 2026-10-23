@@ -23,7 +23,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PyQt6.QtCore import QObject
+import time
+import uuid
+
+from PyQt6.QtCore import QObject, QTimer
 from PyQt6.QtNetwork import QHostAddress
 
 from desktop_music.services.remote import state as rstate
@@ -54,6 +57,17 @@ _DISPATCH_COMMANDS = {
 # Default HTTP port. The browser connects to http://<desktop-ip>:<port>/.
 DEFAULT_HTTP_PORT = 8787
 
+# How long (seconds) an audio claim survives without a heartbeat. The holder
+# refreshes its claim on every remote-state report (roughly once a second),
+# so a claim that goes silent for this long is treated as abandoned -- the
+# desktop reclaims its own audio and another client may claim it.
+_CLAIM_TIMEOUT_S = 6.0
+
+# How often (ms) the service checks the active claim for expiry. Kept short
+# relative to the timeout so the desktop recovers audio promptly when the
+# holding browser is closed or loses connectivity.
+_CLAIM_SWEEP_MS = 2000
+
 
 class RemoteService(QObject):
     """Owns the HTTP surface (REST API + remote page) and binds it to the player."""
@@ -71,15 +85,37 @@ class RemoteService(QObject):
         self._playlist = playlist
         self._http_port = http_port
         self._http = HttpServer(self)
+
+        # Audio-claim state. The desktop keeps its own audio by default; it
+        # only hands audio to the browser (controller.set_remote_mode(True))
+        # when a client *explicitly* claims it, and only one client may hold
+        # the claim at a time. ``_claim_token`` identifies the holder;
+        # ``_claim_seen`` is the monotonic timestamp of its last heartbeat.
+        self._claim_token: Optional[str] = None
+        self._claim_seen: float = 0.0
+
+        # Periodically expire a claim whose holder stopped sending heartbeats
+        # (e.g. the browser tab was closed), so the desktop reclaims audio.
+        self._claim_timer = QTimer(self)
+        self._claim_timer.setInterval(_CLAIM_SWEEP_MS)
+        self._claim_timer.timeout.connect(self._expire_stale_claim)
+
         self._register_routes()
 
     # -- lifecycle ---------------------------------------------------------
 
     def start(self, address: Optional[QHostAddress] = None) -> bool:
         """Start the HTTP server. Returns True on success."""
-        return self._http.start(self._http_port, address)
+        ok = self._http.start(self._http_port, address)
+        if ok:
+            self._claim_timer.start()
+        return ok
 
     def stop(self) -> None:
+        self._claim_timer.stop()
+        # Release any outstanding claim so the desktop regains its audio when
+        # the remote feature is turned off.
+        self._release_claim()
         self._http.stop()
 
     @property
@@ -111,6 +147,10 @@ class RemoteService(QObject):
         # Browser -> desktop: the web player reports its own playback position
         # and state so the desktop UI can mirror it in remote mode.
         add("POST", "/api/remote/state", self._h_remote_state)
+        # Browser -> desktop: explicitly claim/release the desktop audio so
+        # the browser becomes the sole audio source. Only one claim at a time.
+        add("POST", "/api/audio/claim", self._h_audio_claim)
+        add("POST", "/api/audio/release", self._h_audio_release)
 
     # -- handlers ----------------------------------------------------------
 
@@ -296,9 +336,12 @@ class RemoteService(QObject):
     def _h_remote_state(self, req: Request) -> Response:
         """Ingest the browser's playback position/state (reverse sync).
 
-        Body: ``{"position_ms": int, "length_ms": int, "state": str}``. The
-        desktop uses this to mirror the browser's progress in remote mode. A
-        no-op when the controller doesn't support remote reporting.
+        Body: ``{"position_ms": int, "length_ms": int, "state": str,
+        "token": str}``. The desktop uses this to mirror the browser's
+        progress in remote mode, and it doubles as the heartbeat for the
+        audio claim: only the client currently holding the claim (matching
+        ``token``) refreshes it, and only its report is mirrored. A no-op
+        when the controller doesn't support remote reporting.
         """
         data = req.json()
         if not isinstance(data, dict):
@@ -309,11 +352,100 @@ class RemoteService(QObject):
         except (TypeError, ValueError):
             return Response.error(400, "position_ms/length_ms must be integers")
         state = str(data.get("state", ""))
+        token = str(data.get("token", "")) or None
+        # Only the current claim holder's report counts. If no one holds the
+        # claim, the browser is not the audio source, so ignore the report.
+        if token is None or token != self._claim_token:
+            return Response.json(self._ack())
+        # Refresh the heartbeat for the holder.
+        self._claim_seen = time.monotonic()
         if hasattr(self._controller, "set_remote_report"):
             self._controller.set_remote_report(
                 position_ms=position_ms, length_ms=length_ms, state=state
             )
         return Response.json(self._ack())
+
+    # -- audio claim -------------------------------------------------------
+
+    def _h_audio_claim(self, req: Request) -> Response:
+        """Claim the desktop audio for the calling browser (single holder).
+
+        Body: optional ``{"token": str}``. If the caller passes the token it
+        already holds, the claim is simply refreshed. Otherwise a new claim
+        is granted only when no other client currently holds one; a live
+        foreign claim yields ``409 Conflict`` so a second browser cannot
+        steal audio from the first.
+
+        On a successful (new or refreshed) claim the desktop switches to
+        browser-playback mode (muted, load-only) via
+        ``controller.set_remote_mode(True)``.
+        """
+        data = req.json()
+        if data is not None and not isinstance(data, dict):
+            return Response.error(400, "expected JSON body")
+        req_token = str((data or {}).get("token", "")) or None
+
+        # Drop a claim that has gone silent before deciding.
+        self._expire_stale_claim()
+
+        if self._claim_token is not None and req_token != self._claim_token:
+            # Someone else holds a live claim.
+            return Response.error(409, "audio already claimed by another client")
+
+        if self._claim_token is None:
+            self._claim_token = req_token or uuid.uuid4().hex
+        self._claim_seen = time.monotonic()
+        self._set_remote_mode(True)
+
+        snap = self._ack()
+        snap["audio_token"] = self._claim_token
+        return Response.json(snap)
+
+    def _h_audio_release(self, req: Request) -> Response:
+        """Release the audio claim held by the calling browser.
+
+        Body: optional ``{"token": str}``. The claim is released only when
+        the token matches the current holder (or no token is given, which is
+        treated as a best-effort release of the caller's own claim). Releasing
+        restores normal desktop playback. Idempotent / always 200.
+        """
+        data = req.json()
+        if data is not None and not isinstance(data, dict):
+            return Response.error(400, "expected JSON body")
+        req_token = str((data or {}).get("token", "")) or None
+        if (
+            self._claim_token is not None
+            and req_token is not None
+            and req_token != self._claim_token
+        ):
+            # Not the holder: refuse to release someone else's claim, but do
+            # not error -- the caller simply doesn't own audio.
+            snap = self._ack()
+            snap["audio_token"] = None
+            return Response.json(snap)
+        self._release_claim()
+        snap = self._ack()
+        snap["audio_token"] = None
+        return Response.json(snap)
+
+    def _release_claim(self) -> None:
+        """Drop any active claim and return audio to the desktop."""
+        if self._claim_token is None:
+            return
+        self._claim_token = None
+        self._claim_seen = 0.0
+        self._set_remote_mode(False)
+
+    def _expire_stale_claim(self) -> None:
+        """Release the claim if its holder stopped sending heartbeats."""
+        if self._claim_token is None:
+            return
+        if time.monotonic() - self._claim_seen > _CLAIM_TIMEOUT_S:
+            self._release_claim()
+
+    def _set_remote_mode(self, enabled: bool) -> None:
+        if hasattr(self._controller, "set_remote_mode"):
+            self._controller.set_remote_mode(enabled)
 
     # -- helpers -----------------------------------------------------------
 

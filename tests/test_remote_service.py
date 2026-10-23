@@ -98,6 +98,19 @@ class FakeController:
         self.volume = 50
         self.play_mode = FakePlayMode()
         self.calls = []
+        self.remote_mode = False
+        self.remote_report = None
+
+    def set_remote_mode(self, enabled):
+        self.remote_mode = bool(enabled)
+        self.calls.append(("set_remote_mode", bool(enabled)))
+
+    def set_remote_report(self, *, position_ms, length_ms, state):
+        self.remote_report = {
+            "position_ms": position_ms,
+            "length_ms": length_ms,
+            "state": state,
+        }
 
     def dispatch(self, command_id):
         self.calls.append(("dispatch", command_id))
@@ -497,3 +510,137 @@ def test_remove_current_advances_to_next(svc, qtbot):
     # which has shifted into index 1 (was T2).
     assert playlist.current_index == 1
     assert playlist.current_track().title == "T2"
+
+
+# -- /api/audio/claim + /api/audio/release --------------------------------
+
+
+def test_claim_enters_remote_mode(svc, qtbot):
+    service, controller, _ = svc
+    assert controller.remote_mode is False
+    status, body = _request(
+        qtbot, service.http_port, "POST", "/api/audio/claim",
+        body=b'{"token": "t1"}',
+    )
+    assert status == 200
+    assert controller.remote_mode is True
+    assert json.loads(body)["audio_token"] == "t1"
+
+
+def test_claim_without_token_generates_one(svc, qtbot):
+    service, controller, _ = svc
+    status, body = _request(
+        qtbot, service.http_port, "POST", "/api/audio/claim", body=b"{}"
+    )
+    assert status == 200
+    assert controller.remote_mode is True
+    assert json.loads(body)["audio_token"]  # non-empty server-generated token
+
+
+def test_second_client_claim_conflicts(svc, qtbot):
+    service, controller, _ = svc
+    status, _ = _request(
+        qtbot, service.http_port, "POST", "/api/audio/claim",
+        body=b'{"token": "first"}',
+    )
+    assert status == 200
+    # A different client cannot steal the audio while the first holds it.
+    status, body = _request(
+        qtbot, service.http_port, "POST", "/api/audio/claim",
+        body=b'{"token": "second"}',
+    )
+    assert status == 409
+    assert "already claimed" in json.loads(body)["error"]
+    assert controller.remote_mode is True
+
+
+def test_same_client_reclaim_refreshes(svc, qtbot):
+    service, controller, _ = svc
+    for _ in range(2):
+        status, body = _request(
+            qtbot, service.http_port, "POST", "/api/audio/claim",
+            body=b'{"token": "mine"}',
+        )
+        assert status == 200
+    assert json.loads(body)["audio_token"] == "mine"
+    assert controller.remote_mode is True
+
+
+def test_release_restores_desktop_audio(svc, qtbot):
+    service, controller, _ = svc
+    _request(qtbot, service.http_port, "POST", "/api/audio/claim",
+             body=b'{"token": "t1"}')
+    assert controller.remote_mode is True
+    status, body = _request(
+        qtbot, service.http_port, "POST", "/api/audio/release",
+        body=b'{"token": "t1"}',
+    )
+    assert status == 200
+    assert controller.remote_mode is False
+    assert json.loads(body)["audio_token"] is None
+    # After release a new client can claim.
+    status, _ = _request(
+        qtbot, service.http_port, "POST", "/api/audio/claim",
+        body=b'{"token": "t2"}',
+    )
+    assert status == 200
+    assert controller.remote_mode is True
+
+
+def test_release_with_wrong_token_is_ignored(svc, qtbot):
+    service, controller, _ = svc
+    _request(qtbot, service.http_port, "POST", "/api/audio/claim",
+             body=b'{"token": "owner"}')
+    status, _ = _request(
+        qtbot, service.http_port, "POST", "/api/audio/release",
+        body=b'{"token": "intruder"}',
+    )
+    assert status == 200
+    # The real owner still holds the claim.
+    assert controller.remote_mode is True
+
+
+def test_remote_state_requires_matching_token(svc, qtbot):
+    service, controller, _ = svc
+    _request(qtbot, service.http_port, "POST", "/api/audio/claim",
+             body=b'{"token": "holder"}')
+    # Report with the wrong token is ignored (not the audio source).
+    _request(
+        qtbot, service.http_port, "POST", "/api/remote/state",
+        body=b'{"token": "other", "position_ms": 5000, "length_ms": 9000, "state": "playing"}',
+    )
+    assert controller.remote_report is None
+    # Report with the holder's token is mirrored.
+    _request(
+        qtbot, service.http_port, "POST", "/api/remote/state",
+        body=b'{"token": "holder", "position_ms": 5000, "length_ms": 9000, "state": "playing"}',
+    )
+    assert controller.remote_report == {
+        "position_ms": 5000, "length_ms": 9000, "state": "playing",
+    }
+
+
+def test_claim_expires_after_timeout(svc, qtbot, monkeypatch):
+    service, controller, _ = svc
+    import desktop_music.services.remote.remote_service as rs
+
+    status, _ = _request(
+        qtbot, service.http_port, "POST", "/api/audio/claim",
+        body=b'{"token": "t1"}',
+    )
+    assert status == 200
+    assert controller.remote_mode is True
+
+    # Simulate the heartbeat lapsing past the timeout, then run the sweep.
+    service._claim_seen -= (rs._CLAIM_TIMEOUT_S + 1.0)
+    service._expire_stale_claim()
+    assert service._claim_token is None
+    assert controller.remote_mode is False
+
+    # With the claim expired, a different client may now claim.
+    status, _ = _request(
+        qtbot, service.http_port, "POST", "/api/audio/claim",
+        body=b'{"token": "t2"}',
+    )
+    assert status == 200
+    assert controller.remote_mode is True
