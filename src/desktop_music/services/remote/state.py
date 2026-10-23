@@ -12,8 +12,11 @@ on, so they are documented inline.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Optional
+
+_log = logging.getLogger("desktop_music.remote.state")
 
 # These imports are only used for isinstance-free value normalization and to
 # avoid a hard dependency cycle; the functions accept duck-typed objects.
@@ -239,7 +242,7 @@ def build_state_snapshot(controller: Any, playlist: Any | None = None) -> dict[s
         if reported_state:
             state = str(reported_state)
 
-    return {
+    snapshot = {
         "state": state,
         "position_ms": position_ms,
         "length_ms": length_ms,
@@ -252,3 +255,10 @@ def build_state_snapshot(controller: Any, playlist: Any | None = None) -> dict[s
         "current": current,
         "remote_mode": remote_mode,
     }
+    _log.debug(
+        "snapshot: remote_mode=%s muted=%s state=%s pos=%s len=%s idx=%s "
+        "has_report=%s",
+        remote_mode, muted, state, position_ms, length_ms, current_index,
+        isinstance(remote_report, dict),
+    )
+    return snapshot

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import logging
 import time
 import uuid
 
@@ -32,6 +33,8 @@ from PyQt6.QtNetwork import QHostAddress
 from desktop_music.services.remote import state as rstate
 from desktop_music.services.remote.http_server import HttpServer, Request, Response
 from desktop_music.services.remote.web import REMOTE_PAGE_HTML
+
+_log = logging.getLogger("desktop_music.remote")
 
 # Command ids accepted by POST /api/command/{id}. These map onto
 # PlayerController.dispatch, which already knows the core command set.
@@ -458,6 +461,10 @@ class RemoteService(QObject):
 
         if self._claim_token is not None and req_token != self._claim_token:
             # Someone else holds a live claim.
+            _log.info(
+                "claim DENIED (409): req_token=%s holder=%s",
+                req_token, self._claim_token,
+            )
             return Response.error(409, "audio already claimed by another client")
 
         if self._claim_token is None:
@@ -467,6 +474,11 @@ class RemoteService(QObject):
 
         snap = self._ack()
         snap["audio_token"] = self._claim_token
+        _log.info(
+            "claim GRANTED token=%s -> remote_mode=%s muted=%s pos=%s len=%s state=%s",
+            self._claim_token, snap.get("remote_mode"), snap.get("muted"),
+            snap.get("position_ms"), snap.get("length_ms"), snap.get("state"),
+        )
         return Response.json(snap)
 
     def _h_audio_release(self, req: Request) -> Response:
@@ -488,18 +500,28 @@ class RemoteService(QObject):
         ):
             # Not the holder: refuse to release someone else's claim, but do
             # not error -- the caller simply doesn't own audio.
+            _log.info(
+                "release IGNORED: req_token=%s is not holder=%s",
+                req_token, self._claim_token,
+            )
             snap = self._ack()
             snap["audio_token"] = None
             return Response.json(snap)
         self._release_claim()
         snap = self._ack()
         snap["audio_token"] = None
+        _log.info(
+            "release DONE req_token=%s -> remote_mode=%s muted=%s pos=%s len=%s state=%s",
+            req_token, snap.get("remote_mode"), snap.get("muted"),
+            snap.get("position_ms"), snap.get("length_ms"), snap.get("state"),
+        )
         return Response.json(snap)
 
     def _release_claim(self) -> None:
         """Drop any active claim and return audio to the desktop."""
         if self._claim_token is None:
             return
+        _log.info("_release_claim: dropping token=%s", self._claim_token)
         self._claim_token = None
         self._claim_seen = 0.0
         self._set_remote_mode(False)
@@ -508,12 +530,23 @@ class RemoteService(QObject):
         """Release the claim if its holder stopped sending heartbeats."""
         if self._claim_token is None:
             return
-        if time.monotonic() - self._claim_seen > _CLAIM_TIMEOUT_S:
+        silent = time.monotonic() - self._claim_seen
+        if silent > _CLAIM_TIMEOUT_S:
+            _log.info(
+                "claim EXPIRED token=%s (silent %.1fs > %.1fs)",
+                self._claim_token, silent, _CLAIM_TIMEOUT_S,
+            )
             self._release_claim()
 
     def _set_remote_mode(self, enabled: bool) -> None:
         if hasattr(self._controller, "set_remote_mode"):
+            before = bool(getattr(self._controller, "remote_mode", False))
             self._controller.set_remote_mode(enabled)
+            after = bool(getattr(self._controller, "remote_mode", False))
+            _log.info(
+                "set_remote_mode(%s): controller.remote_mode %s -> %s",
+                enabled, before, after,
+            )
 
     # -- helpers -----------------------------------------------------------
 

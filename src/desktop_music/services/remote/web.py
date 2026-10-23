@@ -308,6 +308,7 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   }
 
   function releaseAudio(useBeacon) {
+    try { console.log("[remote] releaseAudio: token=" + audioToken + " useBeacon=" + !!useBeacon); } catch (e) {}
     if (!audioToken) { claimed = false; updateListenButton(); return; }
     var body = JSON.stringify({ token: audioToken });
     // On page unload, a beacon survives the teardown; otherwise use fetch.
@@ -318,7 +319,16 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: body
-      }).catch(function () {});
+      }).then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (s) {
+          try {
+            console.log("[remote] release response: " +
+              (s ? ("remote_mode=" + s.remote_mode + " muted=" + s.muted +
+                    " pos=" + s.position_ms + " state=" + s.state) : "null"));
+          } catch (e) {}
+          // Reflect the desktop's restored state immediately.
+          if (s) applyState(s);
+        }).catch(function () {});
     }
     claimed = false;
     audio.pause();
@@ -479,6 +489,14 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
     } else {
       muted = audio.muted;
     }
+    try {
+      console.log("[remote] applyState mute: claimed=" + claimed +
+        " claimPending=" + claimPending + " s.muted=" + s.muted +
+        " -> audio.muted=" + audio.muted +
+        " | remote_mode=" + s.remote_mode + " s.state=" + s.state +
+        " s.pos=" + s.position_ms + " s.len=" + s.length_ms +
+        " s.idx=" + s.current_index);
+    } catch (e) {}
     updateMuteButton();
 
     $("btnShuffle").classList.toggle("toggled", !!s.shuffle);
@@ -499,10 +517,22 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
       updateListenButton();
       setListenNote("Another device took over, or the claim expired.", true);
     }
-    // When we are not the audio source, mirror the desktop's play state on
-    // the play button (we don't drive a local <audio> in that mode).
+    // When we are not the audio source, mirror the desktop's play state and
+    // playback position on the UI (we don't drive a local <audio> then, so
+    // updateProgress -- which reads <audio> -- won't reflect the desktop).
     if (!claimed) {
       $("btnPlay").textContent = (s.state === "playing") ? "⏸" : "▶";
+      if (!seeking) {
+        var dpos = Math.max(0, s.position_ms | 0);
+        var dlen = Math.max(0, s.length_ms | 0);
+        $("seek").value = dlen > 0 ? Math.round((dpos / dlen) * 1000) : 0;
+        $("curTime").textContent = fmt(dpos);
+        $("durTime").textContent = fmt(dlen);
+      }
+      try {
+        console.log("[remote] applyState progress (desktop source): pos=" +
+          s.position_ms + " len=" + s.length_ms + " state=" + s.state);
+      } catch (e) {}
     }
   }
 
