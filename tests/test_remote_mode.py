@@ -158,3 +158,81 @@ def test_snapshot_uses_backend_when_not_remote():
     assert snap["remote_mode"] is False
     assert snap["position_ms"] == 1234
     assert snap["length_ms"] == 5678
+
+
+# -- leaving remote mode resumes at the browser's last position -----------
+
+
+def test_disable_resumes_at_last_reported_position_playing():
+    """Turning off remote mode while the browser was *playing* starts the
+    desktop playing again and seeks to the browser's last position, unmuted."""
+    controller, backend = _make_controller()
+    backend.is_muted.return_value = False  # desktop unmuted before remote
+    controller.set_remote_mode(True)
+    # Browser reports it's playing at 42s.
+    controller.set_remote_report(position_ms=42000, length_ms=200000, state="playing")
+
+    backend.play.reset_mock()
+    backend.set_muted.reset_mock()
+    controller.set_remote_mode(False)
+
+    # Unmuted again (restored pre-remote state).
+    backend.set_muted.assert_called_with(False)
+    # Playback restarted and a resume-seek is pending for 42s.
+    backend.play.assert_called_once()
+    assert controller._resume_pending is True
+    assert controller._resume_seek_ms == 42000
+    assert controller._resume_pause is False
+
+    # Once the backend reports it's live, _poll applies the seek.
+    backend.get_state.return_value = PlaybackState.PLAYING
+    controller._poll()
+    backend.seek.assert_called_with(42000)
+    assert controller._resume_pending is False
+
+
+def test_disable_resumes_cue_offset():
+    """For a cue segment, the browser position is relative to the segment, so
+    the resume seek must add the segment start to get the absolute time."""
+    controller, backend = _make_controller()
+    playlist = FakePlaylist([FakeTrack("/album.flac", start_ms=60000, end_ms=120000)])
+    controller.set_playlist(playlist)
+    # Simulate play_row arming the segment window.
+    controller.play_row(0)
+    controller.set_remote_mode(True)
+    # Browser is 10s into the (cue) track.
+    controller.set_remote_report(position_ms=10000, length_ms=60000, state="playing")
+
+    controller.set_remote_mode(False)
+    # Absolute backend time = seg_start (60000) + relative (10000).
+    assert controller._resume_seek_ms == 70000
+    assert controller._resume_pending is True
+
+
+def test_disable_paused_positions_but_does_not_autoplay():
+    """If the browser was paused, the desktop is positioned there and left
+    paused (resume_pause) rather than auto-playing."""
+    controller, backend = _make_controller()
+    controller.set_remote_mode(True)
+    controller.set_remote_report(position_ms=30000, length_ms=200000, state="paused")
+
+    controller.set_remote_mode(False)
+    assert controller._resume_pending is True
+    assert controller._resume_seek_ms == 30000
+    assert controller._resume_pause is True
+
+    backend.get_state.return_value = PlaybackState.PLAYING
+    controller._poll()
+    backend.seek.assert_called_with(30000)
+    backend.pause.assert_called()  # settled back to paused
+
+
+def test_disable_without_report_just_unmutes():
+    """No browser report (nothing ever played) -> just restore mute, no
+    resume seek/play."""
+    controller, backend = _make_controller()
+    controller.set_remote_mode(True)
+    backend.play.reset_mock()
+    controller.set_remote_mode(False)
+    assert controller._resume_pending is False
+    backend.play.assert_not_called()

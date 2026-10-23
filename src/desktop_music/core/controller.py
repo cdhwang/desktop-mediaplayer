@@ -12,10 +12,14 @@ signals and stubs for them so the control bar can wire up now.
 
 from __future__ import annotations
 
+import logging
+
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from desktop_music.core.playmode import PlayMode, RepeatMode
 from desktop_music.services.backend import PlaybackState, VLCBackend
+
+_log = logging.getLogger("desktop_music.controller")
 
 # How far a single seek command jumps, in milliseconds.
 SEEK_STEP_MS = 5_000
@@ -250,9 +254,50 @@ class PlayerController(QObject):
                 self._backend.pause()
             self.volume_changed.emit(self._volume, self._backend.is_muted())
         else:
+            # Leaving browser-playback mode: hand audio back to the desktop.
+            # Resume from wherever the browser left off (its last reported
+            # position) and, if it was playing, keep playing -- now unmuted.
+            report = self._remote_report
             self._remote_report = None
             self._backend.set_muted(self._pre_remote_muted)
+
+            resume_ms = 0
+            was_playing = False
+            if isinstance(report, dict):
+                # The browser reports a position relative to the (possibly
+                # cue-trimmed) track; map it back to an absolute backend time
+                # by adding the current segment's start offset.
+                rel = max(0, int(report.get("position_ms", 0)))
+                resume_ms = self._seg_start + rel
+                was_playing = str(report.get("state", "")) == "playing"
+
+            if was_playing:
+                # libVLC ignores set_time() before playback actually starts,
+                # so start playing and apply the seek once the backend reports
+                # it's live (handled in _poll via the resume-pending hook).
+                # Cancel any pending cue-start seek so it doesn't overwrite our
+                # resume position with the segment start.
+                self._seg_pending_seek = False
+                self._backend.play()
+                self._resume_pending = True
+                self._resume_seek_ms = resume_ms
+                self._resume_pause = False
+            elif resume_ms > 0:
+                # Was paused in the browser: position the desktop there and
+                # leave it paused so a later Play starts from the same spot.
+                self._seg_pending_seek = False
+                self._backend.play()
+                self._resume_pending = True
+                self._resume_seek_ms = resume_ms
+                self._resume_pause = True
+
             self.volume_changed.emit(self._volume, self._backend.is_muted())
+            _log.info(
+                "remote_mode OFF: resume_ms=%s was_playing=%s seg_start=%s "
+                "report=%s muted_restored=%s",
+                resume_ms, was_playing, self._seg_start, report,
+                self._backend.is_muted(),
+            )
 
     def set_remote_report(
         self, *, position_ms: int, length_ms: int, state: str
