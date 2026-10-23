@@ -25,7 +25,9 @@ snapshots), and fully customizable keyboard shortcuts.
   restore defaults — all saved to disk
 - **Web remote control**: control playback from any browser on the same
   Wi-Fi (play/pause, next/previous, volume, mute, shuffle/repeat, seek,
-  pick a track) — no app install, served by the desktop itself
+  pick a track) — and **listen in the browser itself**: tracks are streamed
+  as MP3 (transcoded on the fly with ffmpeg) so even FLAC/APE play on a
+  phone. No app install, served by the desktop itself
 - **Dark theme**: PotPlayer-inspired QSS
 
 ## Requirements
@@ -65,6 +67,26 @@ so no extra app or configuration is needed. There is no authentication, so
 only enable it on networks you trust. The on/off choice is remembered between
 sessions.
 
+### Listening in the browser
+
+The sound plays **in the browser**, not just on the desktop. While remote
+control is on, the desktop runs in a *control-separation* mode: libVLC is
+muted and only *loads* tracks, and the browser becomes the sole audio source
+via a hidden `<audio>` element. This keeps playback perfectly in sync with
+what you tap on the phone — there is only one clock, the browser's.
+
+Each track is transcoded to MP3 on demand with **ffmpeg** (so lossless/exotic
+formats like FLAC, APE or WavPack play on any phone) and served from
+`GET /api/audio/{index}` with HTTP Range support, so the seek bar and track
+duration work normally. Cue-sheet tracks are transcoded for just their
+segment. The first time a track is requested it takes a couple of seconds to
+convert; after that it is cached. The cache lives under
+`~/.cache/desktop-music/stream/` and keeps at most **5** transcoded files
+(least-recently-used ones are deleted), so it never grows without bound.
+
+Turning remote control back off unmutes the desktop and restores normal local
+playback.
+
 ## Test
 
 ```bash
@@ -96,6 +118,7 @@ src/desktop_music/
       remote_service.py # HTTP routes -> controller/playlist
       http_server.py  # minimal HTTP/1.1 on QTcpServer
       state.py        # controller/playlist -> JSON snapshots
+      transcode.py    # ffmpeg MP3 transcoding + LRU stream cache
       web.py          # single-file HTML remote page
   ui/                 # PyQt6 widgets
     main_window.py    # window, menu bar, wiring

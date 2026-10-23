@@ -23,6 +23,7 @@ concrete routes to the controller/playlist.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -58,11 +59,21 @@ class Request:
 
 @dataclass
 class Response:
-    """An HTTP response to send back."""
+    """An HTTP response to send back.
+
+    Two body sources are supported, and are mutually exclusive:
+
+    * ``body`` -- an in-memory ``bytes`` payload (JSON, HTML, small images).
+    * ``file_path`` -- a path to a file streamed from disk with HTTP Range
+      support (used for transcoded audio, which can be several MB). When set,
+      :meth:`HttpServer._send` serves the file directly and honours the
+      request's ``Range`` header (``206 Partial Content`` / ``416``).
+    """
 
     status: int = 200
     body: bytes = b""
     headers: dict[str, str] = field(default_factory=dict)
+    file_path: Optional[str] = None
 
     @classmethod
     def json(cls, data: object, status: int = 200) -> "Response":
@@ -81,15 +92,34 @@ class Response:
     def error(cls, status: int, message: str) -> "Response":
         return cls.json({"error": message}, status=status)
 
+    @classmethod
+    def file(
+        cls, path: str, content_type: str = "application/octet-stream",
+        headers: Optional[dict[str, str]] = None,
+    ) -> "Response":
+        """Serve *path* from disk with Range support.
+
+        The actual range negotiation (status, ``Content-Range``, partial
+        bytes) happens in :meth:`HttpServer._send`, which has access to the
+        originating request's ``Range`` header.
+        """
+        hdrs = {"Content-Type": content_type}
+        if headers:
+            hdrs.update(headers)
+        return cls(status=200, file_path=path, headers=hdrs)
+
 
 _STATUS_TEXT = {
     200: "OK",
     204: "No Content",
+    206: "Partial Content",
     400: "Bad Request",
     404: "Not Found",
     405: "Method Not Allowed",
     413: "Payload Too Large",
+    416: "Range Not Satisfiable",
     500: "Internal Server Error",
+    503: "Service Unavailable",
 }
 
 Handler = Callable[[Request], Response]
@@ -217,7 +247,7 @@ class HttpServer(QObject):
             body=body,
         )
         response = self._dispatch(request)
-        self._send(socket, response)
+        self._send(socket, response, request)
 
     def _dispatch(self, request: Request) -> Response:
         # CORS preflight: allow everything (trusted LAN, no auth).
@@ -243,7 +273,17 @@ class HttpServer(QObject):
             return Response.error(405, "method not allowed")
         return Response.error(404, "not found")
 
-    def _send(self, socket: QTcpSocket, response: Response) -> None:
+    def _send(
+        self,
+        socket: QTcpSocket,
+        response: Response,
+        request: Optional[Request] = None,
+    ) -> None:
+        # File-backed responses are served from disk with Range support.
+        if response.file_path is not None:
+            self._send_file(socket, response, request)
+            return
+
         text = _STATUS_TEXT.get(response.status, "OK")
         headers = dict(response.headers)
         headers.setdefault("Content-Length", str(len(response.body)))
@@ -264,9 +304,138 @@ class HttpServer(QObject):
             # socket may already be gone; ignore
             pass
 
+    def _send_file(
+        self,
+        socket: QTcpSocket,
+        response: Response,
+        request: Optional[Request],
+    ) -> None:
+        """Stream ``response.file_path`` from disk, honouring ``Range``.
+
+        Serves ``200`` for a full-body request or ``206 Partial Content`` for
+        a valid ``Range: bytes=start-end`` header. An unsatisfiable range
+        yields ``416`` with a ``Content-Range: bytes */size`` header. The
+        body is written in chunks so large files don't balloon memory.
+        """
+        path = response.file_path or ""
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            self._send(socket, Response.error(404, "file not found"))
+            return
+
+        range_header = ""
+        if request is not None:
+            range_header = request.headers.get("range", "")
+
+        start = 0
+        end = size - 1  # inclusive
+        status = 200
+        parsed = _parse_range(range_header, size)
+        if range_header and parsed is None:
+            # Range present but unsatisfiable -> 416.
+            headers = {
+                "Content-Range": f"bytes */{size}",
+                "Content-Type": response.headers.get(
+                    "Content-Type", "application/octet-stream"
+                ),
+            }
+            self._send(
+                socket,
+                Response(status=416, body=b"", headers=headers),
+            )
+            return
+        if parsed is not None:
+            start, end = parsed
+            status = 206
+
+        content_length = end - start + 1
+        text = _STATUS_TEXT.get(status, "OK")
+        headers = dict(response.headers)
+        headers["Content-Length"] = str(content_length)
+        headers["Accept-Ranges"] = "bytes"
+        if status == 206:
+            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        headers.setdefault("Access-Control-Allow-Origin", "*")
+        headers.setdefault("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        headers.setdefault("Access-Control-Allow-Headers", "Content-Type, Range")
+        headers.setdefault("Connection", "close")
+
+        out = [f"HTTP/1.1 {status} {text}"]
+        out += [f"{k}: {v}" for k, v in headers.items()]
+        header_blob = ("\r\n".join(out) + "\r\n\r\n").encode("latin-1")
+
+        try:
+            socket.write(header_blob)
+            with open(path, "rb") as fh:
+                fh.seek(start)
+                remaining = content_length
+                chunk_size = 64 * 1024
+                while remaining > 0:
+                    chunk = fh.read(min(chunk_size, remaining))
+                    if not chunk:
+                        break
+                    socket.write(chunk)
+                    # Flush periodically so Qt drains its write buffer and we
+                    # don't accumulate the whole file in memory.
+                    socket.flush()
+                    socket.waitForBytesWritten(5000)
+                    remaining -= len(chunk)
+            socket.flush()
+            socket.disconnectFromHost()
+        except (RuntimeError, OSError):
+            # socket closed mid-stream (browser aborted) or read error; ignore
+            pass
+
+
+def _parse_range(header: str, size: int) -> Optional[tuple[int, int]]:
+    """Parse a single-range ``Range: bytes=start-end`` header.
+
+    Returns an inclusive ``(start, end)`` byte range clamped to ``[0, size)``,
+    or ``None`` when the header is absent, malformed, multi-range, or cannot
+    be satisfied against a file of *size* bytes.
+
+    Supported forms (per RFC 7233, single range only):
+      * ``bytes=START-END``  explicit range
+      * ``bytes=START-``     from START to end of file
+      * ``bytes=-SUFFIX``    the last SUFFIX bytes
+    """
+    if not header or size <= 0:
+        return None
+    header = header.strip()
+    if not header.lower().startswith("bytes="):
+        return None
+    spec = header[len("bytes="):].strip()
+    if "," in spec:
+        return None  # multi-range not supported
+    if "-" not in spec:
+        return None
+    start_s, _, end_s = spec.partition("-")
+    start_s, end_s = start_s.strip(), end_s.strip()
+    try:
+        if start_s == "":
+            # Suffix range: last N bytes.
+            if end_s == "":
+                return None
+            suffix = int(end_s)
+            if suffix <= 0:
+                return None
+            start = max(0, size - suffix)
+            end = size - 1
+        else:
+            start = int(start_s)
+            end = int(end_s) if end_s != "" else size - 1
+    except ValueError:
+        return None
+    if start < 0 or start >= size or end < start:
+        return None
+    end = min(end, size - 1)
+    return start, end
+
 
 def _split_path(path: str) -> list[str]:
     """Split a URL path into non-empty segments."""
+    return [seg for seg in path.split("/") if seg != ""]
     return [seg for seg in path.split("/") if seg != ""]
 
 

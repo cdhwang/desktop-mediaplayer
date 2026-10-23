@@ -226,6 +226,19 @@ def build_state_snapshot(controller: Any, playlist: Any | None = None) -> dict[s
         else None
     )
 
+    # Remote (browser-playback) mode: the browser is the source of truth for
+    # the live playback position/state, so prefer its last report over the
+    # desktop backend (which is paused at position 0 while muted). Volume,
+    # mute, shuffle/repeat and track metadata still come from the desktop.
+    remote_report = getattr(controller, "remote_report", None)
+    remote_mode = bool(getattr(controller, "remote_mode", False))
+    if remote_mode and isinstance(remote_report, dict):
+        position_ms = int(remote_report.get("position_ms", position_ms))
+        length_ms = int(remote_report.get("length_ms", length_ms))
+        reported_state = remote_report.get("state")
+        if reported_state:
+            state = str(reported_state)
+
     return {
         "state": state,
         "position_ms": position_ms,
@@ -237,4 +250,5 @@ def build_state_snapshot(controller: Any, playlist: Any | None = None) -> dict[s
         "rate": rate,
         "current_index": current_index,
         "current": current,
+        "remote_mode": remote_mode,
     }

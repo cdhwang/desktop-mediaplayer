@@ -80,6 +80,18 @@ class PlayerController(QObject):
         self._seg_end = 0
         self._seg_pending_seek = False
 
+        # Remote (browser-playback) mode. When enabled, the browser is the
+        # sole audio source: the desktop libVLC backend only *loads* tracks
+        # (never auto-plays) and stays muted, while the browser reports its
+        # own playback position/state back via :meth:`set_remote_report` so
+        # the desktop UI can mirror it. ``_pre_remote_muted`` remembers the
+        # desktop mute state so it can be restored when remote mode ends.
+        self._remote_mode = False
+        self._pre_remote_muted = False
+        # Latest playback state reported by the browser (position/length/
+        # state), or ``None`` when remote mode is off / nothing reported yet.
+        self._remote_report: dict | None = None
+
         # Optional hook invoked after the backend is rebuilt (e.g. when the
         # audio compressor is toggled), so the UI can re-attach video output
         # to the new MediaPlayer. Set by the window via set_backend_rebuilt_hook.
@@ -113,9 +125,15 @@ class PlayerController(QObject):
         return self._playlist
 
     def play_row(self, row: int, autoplay: bool = True) -> None:
-        """Make *row* current in the playlist and play its track."""
+        """Make *row* current in the playlist and play its track.
+
+        In remote mode the desktop never auto-plays (the browser is the audio
+        source); the track is only loaded so metadata/length are available.
+        """
         if self._playlist is None:
             return
+        if self._remote_mode:
+            autoplay = False
         self._playlist.set_current(row)
         track = self._playlist.track_at(row)
         if track is not None:
@@ -202,6 +220,61 @@ class PlayerController(QObject):
             # explicitly so a cue segment that ends mid-file doesn't let the
             # backing media keep playing past the current track's boundary.
             self.stop()
+
+    # -- remote (browser-playback) mode -----------------------------------
+
+    @property
+    def remote_mode(self) -> bool:
+        """Whether browser-playback (remote) mode is active."""
+        return self._remote_mode
+
+    def set_remote_mode(self, enabled: bool) -> None:
+        """Enable/disable browser-playback mode.
+
+        When enabled the desktop stops auto-playing and is muted, so the only
+        audio the user hears comes from the browser. Any currently-playing
+        track is paused in place (loaded but silent). When disabled the prior
+        desktop mute state is restored. Idempotent.
+        """
+        enabled = bool(enabled)
+        if enabled == self._remote_mode:
+            return
+        self._remote_mode = enabled
+        if enabled:
+            self._pre_remote_muted = self._backend.is_muted()
+            self._backend.set_muted(True)
+            # Stop desktop audio from running ahead of the browser: pause the
+            # backend if it is currently playing. The track stays loaded so
+            # metadata/length remain available.
+            if self._backend.is_playing():
+                self._backend.pause()
+            self.volume_changed.emit(self._volume, self._backend.is_muted())
+        else:
+            self._remote_report = None
+            self._backend.set_muted(self._pre_remote_muted)
+            self.volume_changed.emit(self._volume, self._backend.is_muted())
+
+    def set_remote_report(
+        self, *, position_ms: int, length_ms: int, state: str
+    ) -> None:
+        """Record the browser's own playback position/state.
+
+        In remote mode the browser is the source of truth for "where are we
+        in the track", so the desktop UI mirrors these values rather than the
+        (paused, position-0) libVLC backend. Ignored when remote mode is off.
+        """
+        if not self._remote_mode:
+            return
+        self._remote_report = {
+            "position_ms": max(0, int(position_ms)),
+            "length_ms": max(0, int(length_ms)),
+            "state": str(state or ""),
+        }
+
+    @property
+    def remote_report(self) -> dict | None:
+        """The latest browser-reported playback state, or ``None``."""
+        return self._remote_report
 
     # -- media -------------------------------------------------------------
 

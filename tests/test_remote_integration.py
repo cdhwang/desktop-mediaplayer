@@ -102,3 +102,16 @@ def test_toggle_action_reflects_state(window, qtbot):
     assert window.remote_enabled is True
     window._act_remote.setChecked(False)
     assert window.remote_enabled is False
+
+
+def test_start_remote_enables_controller_remote_mode(window):
+    """Starting the service puts the controller into browser-playback mode
+    (muted, load-only); stopping it restores normal desktop playback."""
+    controller = window._controller
+    assert controller.remote_mode is False
+    assert window.start_remote() is True
+    assert controller.remote_mode is True
+    assert controller.backend.is_muted() is True
+    window.stop_remote()
+    assert controller.remote_mode is False
+    assert controller.backend.is_muted() is False

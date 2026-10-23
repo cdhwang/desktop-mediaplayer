@@ -78,6 +78,18 @@ class FakePlaylist:
     def current_track(self):
         return self.track_at(self.current_index)
 
+    def remove_row(self, row):
+        # Mirror PlaylistModel.remove_row cursor bookkeeping.
+        if not (0 <= row < len(self._tracks)):
+            return
+        del self._tracks[row]
+        if not self._tracks:
+            self.current_index = -1
+        elif row < self.current_index:
+            self.current_index -= 1
+        elif row == self.current_index:
+            self.current_index = min(self.current_index, len(self._tracks) - 1)
+
 
 class FakeController:
     def __init__(self, playlist):
@@ -338,3 +350,150 @@ def test_cover_200_with_embedded_art(qtbot, tmp_path):
         assert body == png
     finally:
         service.stop()
+
+
+# -- /api/audio/{index} ---------------------------------------------------
+
+
+import shutil  # noqa: E402
+
+_HAS_FFMPEG = shutil.which("ffmpeg") is not None
+_ffmpeg_required = pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg not installed")
+
+
+def _make_wav_file(path, seconds=1.0, rate=8000):
+    import struct
+    import wave
+
+    frames = int(seconds * rate)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(struct.pack("<" + "h" * frames, *([0] * frames)))
+    return path
+
+
+def test_audio_400_when_index_not_integer(svc, qtbot):
+    service, _, _ = svc
+    status, _ = _request(qtbot, service.http_port, "GET", "/api/audio/abc")
+    assert status == 400
+
+
+def test_audio_404_when_index_out_of_range(svc, qtbot):
+    service, _, _ = svc
+    status, _ = _request(qtbot, service.http_port, "GET", "/api/audio/99")
+    assert status == 404
+
+
+@_ffmpeg_required
+def test_audio_streams_mp3(qtbot, tmp_path, monkeypatch):
+    # Point the transcode cache at a temp dir so tests don't touch ~/.cache.
+    from desktop_music.services.remote import transcode as tc
+
+    cache = tc.TranscodeCache(tmp_path / "cache")
+    monkeypatch.setattr(tc, "get_default_cache", lambda: cache)
+
+    src = _make_wav_file(tmp_path / "song.wav", seconds=1.0)
+    playlist = FakePlaylist(0)
+    playlist._tracks = [FakeTrack(str(src), "Song")]
+    playlist.current_index = 0
+    controller = FakeController(playlist)
+    service = RemoteService(controller, playlist, http_port=0)
+    assert service.start(QHostAddress(QHostAddress.SpecialAddress.LocalHost))
+    try:
+        status, body = _request(qtbot, service.http_port, "GET", "/api/audio/0")
+        assert status == 200
+        assert len(body) > 0
+        head = body[:3]
+        assert head[:2] in (b"\xff\xfb", b"\xff\xf3") or head == b"ID3"
+    finally:
+        service.stop()
+
+
+@_ffmpeg_required
+def test_audio_cue_segment_passed(qtbot, tmp_path, monkeypatch):
+    # Verify the handler forwards the track's cue start/end into transcode.
+    from desktop_music.services.remote import transcode as tc
+
+    seen = {}
+
+    def fake_transcode(path, start_ms=0, end_ms=0, **kw):
+        seen["args"] = (path, start_ms, end_ms)
+        out = tmp_path / "out.mp3"
+        out.write_bytes(b"ID3fake")
+        return out
+
+    monkeypatch.setattr(tc, "transcode_to_mp3", fake_transcode)
+
+    src = _make_wav_file(tmp_path / "album.wav", seconds=3.0)
+    track = FakeTrack(str(src), "Track 2")
+    track.start_ms = 1000
+    track.end_ms = 2000
+    playlist = FakePlaylist(0)
+    playlist._tracks = [track]
+    playlist.current_index = 0
+    controller = FakeController(playlist)
+    service = RemoteService(controller, playlist, http_port=0)
+    assert service.start(QHostAddress(QHostAddress.SpecialAddress.LocalHost))
+    try:
+        status, _ = _request(qtbot, service.http_port, "GET", "/api/audio/0")
+        assert status == 200
+        assert seen["args"] == (str(src), 1000, 2000)
+    finally:
+        service.stop()
+
+
+# -- /api/remove ----------------------------------------------------------
+
+
+def test_remove_400_without_index(svc, qtbot):
+    service, _, _ = svc
+    status, _ = _request(qtbot, service.http_port, "POST", "/api/remove", body=b"{}")
+    assert status == 400
+
+
+def test_remove_400_when_index_out_of_range(svc, qtbot):
+    service, _, _ = svc
+    status, _ = _request(
+        qtbot, service.http_port, "POST", "/api/remove", body=b'{"index": 99}'
+    )
+    assert status == 400
+
+
+def test_remove_deletes_track(svc, qtbot):
+    service, _, playlist = svc
+    assert playlist.rowCount() == 3
+    status, body = _request(
+        qtbot, service.http_port, "POST", "/api/remove", body=b'{"index": 1}'
+    )
+    assert status == 200
+    assert playlist.rowCount() == 2
+    # Remaining titles are T0, T2 (T1 removed).
+    assert [t.title for t in playlist._tracks] == ["T0", "T2"]
+
+
+def test_remove_before_current_shifts_index(svc, qtbot):
+    service, _, playlist = svc
+    playlist.current_index = 2  # playing the last track
+    status, body = _request(
+        qtbot, service.http_port, "POST", "/api/remove", body=b'{"index": 0}'
+    )
+    assert status == 200
+    # Removing an earlier row keeps the same track current (index 2 -> 1).
+    assert playlist.current_index == 1
+    data = json.loads(body)
+    assert data["current_index"] == 1
+
+
+def test_remove_current_advances_to_next(svc, qtbot):
+    service, _, playlist = svc
+    playlist.current_index = 1
+    status, body = _request(
+        qtbot, service.http_port, "POST", "/api/remove", body=b'{"index": 1}'
+    )
+    assert status == 200
+    # The current track was removed; cursor now points at the next track,
+    # which has shifted into index 1 (was T2).
+    assert playlist.current_index == 1
+    assert playlist.current_track().title == "T2"

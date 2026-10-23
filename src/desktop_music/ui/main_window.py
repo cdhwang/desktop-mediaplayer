@@ -983,12 +983,21 @@ class MainWindow(QMainWindow):
             self._act_remote.blockSignals(True)
             self._act_remote.setChecked(True)
             self._act_remote.blockSignals(False)
+        # Browser-playback mode: mute the desktop and load-only (the browser
+        # becomes the sole audio source). Guarded so older/mocked controllers
+        # without the method don't break startup.
+        if hasattr(self._controller, "set_remote_mode"):
+            self._controller.set_remote_mode(True)
         return True
 
     def stop_remote(self) -> None:
         """Stop the remote-control service if running."""
         if self._remote is None:
             return
+        # Restore normal desktop playback (unmute, allow auto-play) before
+        # tearing the service down.
+        if hasattr(self._controller, "set_remote_mode"):
+            self._controller.set_remote_mode(False)
         self._remote.stop()
         self._remote.deleteLater()
         self._remote = None

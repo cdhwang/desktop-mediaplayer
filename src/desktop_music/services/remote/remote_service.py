@@ -102,10 +102,15 @@ class RemoteService(QObject):
         add("GET", "/api/state", self._h_state)
         add("GET", "/api/playlist", self._h_playlist)
         add("GET", "/api/cover/{index}", self._h_cover)
+        add("GET", "/api/audio/{index}", self._h_audio)
         add("POST", "/api/command/{id}", self._h_command)
         add("POST", "/api/volume", self._h_volume)
         add("POST", "/api/seek", self._h_seek)
         add("POST", "/api/play", self._h_play)
+        add("POST", "/api/remove", self._h_remove)
+        # Browser -> desktop: the web player reports its own playback position
+        # and state so the desktop UI can mirror it in remote mode.
+        add("POST", "/api/remote/state", self._h_remote_state)
 
     # -- handlers ----------------------------------------------------------
 
@@ -157,6 +162,57 @@ class RemoteService(QObject):
                 "Content-Type": content_type,
                 "Cache-Control": "public, max-age=3600",
             },
+        )
+
+    def _h_audio(self, req: Request) -> Response:
+        """Stream a playlist track to the browser as MP3.
+
+        ``GET /api/audio/{index}`` transcodes the track at *index* to MP3
+        (reusing a cached copy when available) and serves the resulting file
+        with HTTP Range support, so the browser ``<audio>`` element can seek
+        and show an accurate duration. Cue-sheet tracks are limited to their
+        segment via the track's ``start_ms``/``end_ms``.
+
+        The transcode runs synchronously on the GUI thread. For a typical
+        song this takes a few seconds on first request; subsequent requests
+        (including the browser's own Range follow-ups) hit the cache and
+        return immediately.
+        """
+        raw_index = req.params.get("index", "")
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            return Response.error(400, "index must be an integer")
+        track = (
+            self._playlist.track_at(index)
+            if self._playlist is not None and hasattr(self._playlist, "track_at")
+            else None
+        )
+        if track is None:
+            return Response.error(404, "track not found")
+        path = getattr(track, "path", "") or ""
+        if not path:
+            return Response.error(404, "track has no source file")
+
+        # Imported lazily so the (ffmpeg-dependent) transcode stack is only
+        # pulled in when a browser actually requests audio.
+        from desktop_music.services.remote.transcode import (
+            TranscodeError,
+            transcode_to_mp3,
+        )
+
+        start_ms = int(getattr(track, "start_ms", 0) or 0)
+        end_ms = int(getattr(track, "end_ms", 0) or 0)
+        try:
+            mp3_path = transcode_to_mp3(path, start_ms, end_ms)
+        except TranscodeError as exc:
+            # 503: the source exists but we couldn't produce playable audio
+            # right now (ffmpeg missing or decode failure).
+            return Response.error(503, f"transcode failed: {exc}")
+        return Response.file(
+            str(mp3_path),
+            "audio/mpeg",
+            headers={"Cache-Control": "no-store"},
         )
 
     def _h_command(self, req: Request) -> Response:
@@ -212,6 +268,50 @@ class RemoteService(QObject):
         if not 0 <= index < count:
             return Response.error(400, f"index out of range (0..{count - 1})")
         self._controller.play_row(index)
+        return Response.json(self._ack())
+
+    def _h_remove(self, req: Request) -> Response:
+        """Remove a playlist track (keeps desktop and browser in sync).
+
+        Body: ``{"index": int}``. Removes the track at *index* from the
+        shared playlist model via ``remove_row``, which also advances the
+        now-playing cursor to the next track when the current one is removed.
+        Both clients converge because the browser polls the playlist and the
+        desktop UI is driven by the same model.
+        """
+        data = req.json()
+        if not isinstance(data, dict) or "index" not in data:
+            return Response.error(400, "expected JSON {\"index\": int}")
+        try:
+            index = int(data["index"])
+        except (TypeError, ValueError):
+            return Response.error(400, "index must be an integer")
+        count = self._playlist.rowCount() if self._playlist is not None else 0
+        if not 0 <= index < count:
+            return Response.error(400, f"index out of range (0..{count - 1})")
+        self._playlist.remove_row(index)
+        return Response.json(self._ack())
+
+    def _h_remote_state(self, req: Request) -> Response:
+        """Ingest the browser's playback position/state (reverse sync).
+
+        Body: ``{"position_ms": int, "length_ms": int, "state": str}``. The
+        desktop uses this to mirror the browser's progress in remote mode. A
+        no-op when the controller doesn't support remote reporting.
+        """
+        data = req.json()
+        if not isinstance(data, dict):
+            return Response.error(400, "expected JSON body")
+        try:
+            position_ms = int(data.get("position_ms", 0))
+            length_ms = int(data.get("length_ms", 0))
+        except (TypeError, ValueError):
+            return Response.error(400, "position_ms/length_ms must be integers")
+        state = str(data.get("state", ""))
+        if hasattr(self._controller, "set_remote_report"):
+            self._controller.set_remote_report(
+                position_ms=position_ms, length_ms=length_ms, state=state
+            )
         return Response.json(self._ack())
 
     # -- helpers -----------------------------------------------------------

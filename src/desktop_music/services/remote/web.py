@@ -8,6 +8,20 @@ inside the package with no extra data-file packaging.
 
 The page talks to the same origin it was loaded from, so no host/port needs
 to be configured in the browser.
+
+Audio playback model ("control separation")
+--------------------------------------------
+The desktop player is muted and only *loads* tracks in remote mode; the
+browser is the sole audio source. A hidden ``<audio>`` element plays MP3
+transcoded on demand from ``/api/audio/{index}``.
+
+The desktop's ``current_index`` (from ``/api/state``) is the single "what
+should be playing" signal. Track clicks, next/previous and auto-advance all
+work by changing that index on the desktop (which owns shuffle/repeat); the
+browser simply watches the polled index and (re)loads the matching audio
+whenever it changes. The browser owns transport (play/pause/seek/volume) on
+the ``<audio>`` element and periodically reports its position/state back via
+``POST /api/remote/state`` so the desktop UI can mirror progress.
 """
 
 from __future__ import annotations
@@ -44,6 +58,7 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   .conn { font-size: 12px; color: var(--muted); }
   .conn.ok { color: #58d68d; }
   .conn.bad { color: #e67e7e; }
+  .conn.loading { color: var(--accent); }
   .now-title { font-size: 18px; font-weight: 600; margin-top: 4px; word-break: break-word; }
   .now-sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
   .now-cover-wrap { display: flex; justify-content: center; margin-top: 12px; }
@@ -86,11 +101,21 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   .track .t { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .track .a { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .track .dur { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .track .del {
+    flex: 0 0 auto; min-width: 32px; min-height: 32px; padding: 4px 8px;
+    font-size: 15px; line-height: 1; border-radius: 8px; color: var(--muted);
+    background: transparent; border: 1px solid transparent;
+  }
+  .track .del:hover, .track .del:active { color: #e67e7e; border-color: var(--border); background: var(--panel2); }
   .eq { color: var(--accent); font-size: 14px; }
   .section-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; padding: 8px 12px 2px; }
 </style>
 </head>
 <body>
+  <!-- The real audio player. Hidden; the browser is the sole audio source
+       while the desktop stays muted in remote mode. -->
+  <audio id="audioEl" preload="auto" style="display:none"></audio>
+
   <header>
     <div class="conn" id="conn">connecting…</div>
     <div class="now-title" id="nowTitle">—</div>
@@ -132,9 +157,16 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
-  var seeking = false;
-  var volDragging = false;
+  var audio = $("audioEl");
+
+  var seeking = false;       // user dragging the seek bar
+  var volDragging = false;   // user dragging the volume slider
   var lastPlaylistSig = "";
+  var loadedIndex = -1;      // index currently loaded into <audio>
+  var loadedSig = "";        // identity of the loaded track (title|artist|dur|cue)
+  var userVolume = 1.0;      // 0..1, applied to the <audio> element
+  var muted = false;
+  var loading = false;       // transcode/buffering in progress
 
   function fmt(ms) {
     ms = Math.max(0, ms | 0);
@@ -159,41 +191,151 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
     }).then(applyState).catch(function () {});
   }
 
+  // Fire-and-forget POST that does NOT re-apply the returned state (used for
+  // the frequent remote-state report so it can't fight the audio element).
+  function postQuiet(path, body) {
+    return fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined
+    }).catch(function () {});
+  }
+
   function command(id) { return post("/api/command/" + id); }
 
-  function setConn(ok) {
+  function setConn(kind) {
     var el = $("conn");
-    if (ok) { el.textContent = "connected"; el.className = "conn ok"; }
+    if (kind === "loading") { el.textContent = "loading track…"; el.className = "conn loading"; }
+    else if (kind === "ok") { el.textContent = "connected"; el.className = "conn ok"; }
     else { el.textContent = "disconnected — retrying…"; el.className = "conn bad"; }
   }
 
+  // -- audio element: load / transport ------------------------------------
+
+  // A stable identity for a track, independent of its playlist index. Used
+  // so a deletion that merely shifts indices does not restart the currently
+  // playing track -- we only reload when the identity actually changes.
+  function trackSig(t) {
+    if (!t) return "";
+    return [t.title || "", t.artist || "", t.duration_ms || 0,
+            t.is_cue_track ? 1 : 0].join("|");
+  }
+
+  function loadIndex(index, autoplay, sig) {
+    if (index < 0) return;
+    loadedIndex = index;
+    loadedSig = sig || "";
+    loading = true;
+    setConn("loading");
+    audio.src = "/api/audio/" + index;
+    audio.load();
+    if (autoplay) {
+      var p = audio.play();
+      if (p && p.catch) { p.catch(function () {}); }
+    }
+  }
+
+  function togglePlay() {
+    if (loadedIndex < 0) {
+      // Nothing loaded yet: load whatever the desktop considers current.
+      api("/api/state").then(function (s) {
+        if (s && s.current_index >= 0) {
+          loadIndex(s.current_index, true, trackSig(s.current));
+        }
+      }).catch(function () {});
+      return;
+    }
+    if (audio.paused) {
+      var p = audio.play();
+      if (p && p.catch) { p.catch(function () {}); }
+    } else {
+      audio.pause();
+    }
+  }
+
+  // Report the browser's own playback position/state to the desktop so its
+  // UI mirrors what the listener actually hears.
+  function reportState() {
+    var state = loading ? "buffering"
+              : audio.ended ? "ended"
+              : audio.paused ? "paused"
+              : "playing";
+    postQuiet("/api/remote/state", {
+      position_ms: Math.round((audio.currentTime || 0) * 1000),
+      length_ms: Math.round((isFinite(audio.duration) ? audio.duration : 0) * 1000),
+      state: state
+    });
+  }
+
+  audio.addEventListener("loadedmetadata", function () {
+    loading = false;
+    setConn("ok");
+    updateProgress();
+  });
+  audio.addEventListener("canplay", function () { loading = false; setConn("ok"); });
+  audio.addEventListener("waiting", function () { loading = true; setConn("loading"); });
+  audio.addEventListener("playing", function () { loading = false; setConn("ok"); });
+  audio.addEventListener("timeupdate", function () { if (!seeking) updateProgress(); });
+  audio.addEventListener("play", function () { $("btnPlay").textContent = "⏸"; reportState(); });
+  audio.addEventListener("pause", function () { $("btnPlay").textContent = "▶"; reportState(); });
+  audio.addEventListener("ended", function () {
+    reportState();
+    // Let the desktop decide the next track (it owns shuffle/repeat); the
+    // polling loop will then pick up the new current_index and load it.
+    command("next");
+  });
+  audio.addEventListener("error", function () { loading = false; setConn("bad"); });
+
+  function updateProgress() {
+    var dur = isFinite(audio.duration) ? audio.duration : 0;
+    var pos = audio.currentTime || 0;
+    $("seek").value = dur > 0 ? Math.round((pos / dur) * 1000) : 0;
+    $("curTime").textContent = fmt(pos * 1000);
+    $("durTime").textContent = fmt(dur * 1000);
+  }
+
+  // -- state / playlist rendering -----------------------------------------
+
   function applyState(s) {
     if (!s) return;
-    setConn(true);
+    if (!loading) setConn("ok");
     var cur = s.current;
     $("nowTitle").textContent = cur ? cur.title : "Nothing playing";
     var sub = [];
-    if (s.state) sub.push(s.state);
-    if (cur && cur.artist) sub.unshift(cur.artist);
+    if (cur && cur.artist) sub.push(cur.artist);
     $("nowSub").textContent = sub.join("  ·  ");
 
-    // Seek bar (skip while the user is dragging).
-    if (!seeking) {
-      var len = s.length_ms || 0;
-      var pos = s.position_ms || 0;
-      $("seek").value = len > 0 ? Math.round((pos / len) * 1000) : 0;
-      $("curTime").textContent = fmt(pos);
-      $("durTime").textContent = fmt(len);
+    // Follow the desktop's current track. Compare the track *identity*, not
+    // its index: a deletion elsewhere in the list can shift the current
+    // track's index without changing what is playing. Only (re)load the
+    // audio when the identity actually changes; a pure index shift just
+    // updates our bookkeeping so playback continues uninterrupted.
+    if (typeof s.current_index === "number" && s.current_index >= 0) {
+      var sig = trackSig(s.current);
+      if (loadedIndex < 0 || sig !== loadedSig) {
+        loadIndex(s.current_index, true, sig);
+      } else if (s.current_index !== loadedIndex) {
+        // Same track, new index (list was reordered/trimmed): keep playing.
+        loadedIndex = s.current_index;
+      }
+    } else if (s.current_index < 0) {
+      // Playlist emptied: stop and reset.
+      loadedIndex = -1;
+      loadedSig = "";
     }
 
-    // Volume (skip while dragging).
+    // Volume + mute come from the desktop's persisted settings, applied to
+    // the <audio> element (skip while the user is dragging the slider).
     if (!volDragging) {
       $("vol").value = s.volume;
       $("volVal").textContent = s.volume;
+      userVolume = Math.max(0, Math.min(1, s.volume / 100));
+      audio.volume = userVolume;
     }
+    muted = !!s.muted;
+    audio.muted = muted;
+    $("btnMute").classList.toggle("toggled", muted);
 
-    // Toggles.
-    $("btnMute").classList.toggle("toggled", !!s.muted);
     $("btnShuffle").classList.toggle("toggled", !!s.shuffle);
     var rep = s.repeat || "none";
     var repBtn = $("btnRepeat");
@@ -201,7 +343,6 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
     repBtn.textContent = rep === "one" ? "🔂 Repeat 1"
                         : rep === "all" ? "🔁 Repeat All"
                         : "🔁 Repeat";
-    $("btnPlay").textContent = s.state === "playing" ? "⏸" : "▶";
     highlightPlaying(s.current_index);
     updateNowCover(cur, s.current_index);
   }
@@ -210,7 +351,6 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
     var img = $("nowCover");
     if (cur && cur.has_cover && idx >= 0) {
       var src = "/api/cover/" + idx;
-      // Avoid flicker: only swap the source when the track changed.
       if (img.getAttribute("data-idx") !== String(idx)) {
         img.setAttribute("data-idx", String(idx));
         img.src = src;
@@ -233,7 +373,6 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
 
   function renderPlaylist(pl) {
     if (!pl) return;
-    // Cheap change detection so we don't rebuild the DOM every poll.
     var sig = pl.count + ":" + pl.tracks.map(function (t) { return t.title + (t.has_cover ? "*" : ""); }).join("|");
     if (sig === lastPlaylistSig) {
       highlightPlaying(pl.current_index);
@@ -271,11 +410,25 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
       var dur = document.createElement("div");
       dur.className = "dur";
       dur.textContent = t.duration_ms ? fmt(t.duration_ms) : "";
+      var del = document.createElement("button");
+      del.className = "del";
+      del.setAttribute("title", "Remove from playlist");
+      del.setAttribute("aria-label", "Remove");
+      del.textContent = "✕";
+      del.addEventListener("click", function (ev) {
+        // Don't let the row's click handler start playback.
+        ev.stopPropagation();
+        post("/api/remove", { index: t.index });
+      });
       row.appendChild(idx);
       if (thumb) row.appendChild(thumb);
       row.appendChild(meta);
       row.appendChild(dur);
+      row.appendChild(del);
       row.addEventListener("click", function () {
+        // Select on the desktop (sets current_index, load-only) and load the
+        // audio immediately in the browser without waiting for the next poll.
+        loadIndex(t.index, true, trackSig(t));
         post("/api/play", { index: t.index });
       });
       list.appendChild(row);
@@ -283,39 +436,50 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   }
 
   // -- wiring --
-  $("btnPlay").addEventListener("click", function () { command("play_pause"); });
+  $("btnPlay").addEventListener("click", togglePlay);
   $("btnPrev").addEventListener("click", function () { command("previous"); });
   $("btnNext").addEventListener("click", function () { command("next"); });
-  $("btnStop").addEventListener("click", function () { command("stop"); });
+  $("btnStop").addEventListener("click", function () {
+    audio.pause();
+    audio.currentTime = 0;
+    reportState();
+    command("stop");
+  });
   $("btnVolUp").addEventListener("click", function () { command("volume_up"); });
   $("btnVolDown").addEventListener("click", function () { command("volume_down"); });
-  $("btnMute").addEventListener("click", function () { command("mute"); });
+  $("btnMute").addEventListener("click", function () {
+    muted = !muted;
+    audio.muted = muted;
+    $("btnMute").classList.toggle("toggled", muted);
+    command("mute");  // keep the desktop's mute state in sync
+  });
   $("btnShuffle").addEventListener("click", function () { command("toggle_shuffle"); });
   $("btnRepeat").addEventListener("click", function () { command("cycle_repeat"); });
 
   var seek = $("seek");
-  seek.addEventListener("input", function () {
-    seeking = true;
-  });
+  seek.addEventListener("input", function () { seeking = true; });
   seek.addEventListener("change", function () {
-    var frac = seek.value / 1000;
-    post("/api/seek", { fraction: frac }).then(function () { seeking = false; });
-    setTimeout(function () { seeking = false; }, 400);
+    var dur = isFinite(audio.duration) ? audio.duration : 0;
+    if (dur > 0) { audio.currentTime = (seek.value / 1000) * dur; }
+    reportState();
+    setTimeout(function () { seeking = false; }, 200);
   });
 
   var vol = $("vol");
   vol.addEventListener("input", function () {
     volDragging = true;
     $("volVal").textContent = vol.value;
+    userVolume = Math.max(0, Math.min(1, vol.value / 100));
+    audio.volume = userVolume;
   });
   vol.addEventListener("change", function () {
     post("/api/volume", { value: parseInt(vol.value, 10) });
     setTimeout(function () { volDragging = false; }, 400);
   });
 
-  // -- polling loop --
+  // -- polling loops --
   function pollState() {
-    api("/api/state").then(applyState).catch(function () { setConn(false); });
+    api("/api/state").then(applyState).catch(function () { setConn("bad"); });
   }
   function pollPlaylist() {
     api("/api/playlist").then(renderPlaylist).catch(function () {});
@@ -325,6 +489,8 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   pollPlaylist();
   setInterval(pollState, 1000);
   setInterval(pollPlaylist, 3000);
+  // Report our playback position to the desktop a few times a second.
+  setInterval(reportState, 1000);
 })();
 </script>
 </body>
