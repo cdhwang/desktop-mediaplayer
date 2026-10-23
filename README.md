@@ -23,6 +23,9 @@ snapshots), and fully customizable keyboard shortcuts.
   subtitles, playback speed, frame snapshots
 - **Customizable shortcuts**: reassign any command, conflict detection,
   restore defaults — all saved to disk
+- **Web remote control**: control playback from any browser on the same
+  Wi-Fi (play/pause, next/previous, volume, mute, shuffle/repeat, seek,
+  pick a track) — no app install, served by the desktop itself
 - **Dark theme**: PotPlayer-inspired QSS
 
 ## Requirements
@@ -42,6 +45,23 @@ snapshots), and fully customizable keyboard shortcuts.
 ```bash
 uv run python main.py
 ```
+
+## Web remote control
+
+Enable **Tools → Remote Control (web browser)** in the app. The desktop then
+runs a small HTTP server on port **8787**. On a phone, tablet, or another
+computer on the **same Wi-Fi**, open:
+
+```
+http://<desktop-ip>:8787/
+```
+
+(replace `<desktop-ip>` with the machine's LAN IP, e.g. `192.168.1.20`). The
+page shows the playlist and the current track, and lets you play/pause, skip,
+change volume, mute, toggle shuffle/repeat, seek, and tap a track to play it.
+It refreshes by polling, so no extra app or configuration is needed. There is
+no authentication, so only enable it on networks you trust. The on/off choice
+is remembered between sessions.
 
 ## Test
 
@@ -70,6 +90,11 @@ src/desktop_music/
     equalizer.py      # libVLC EQ presets
     spectrum.py       # offline FFT analysis
     settings.py       # JSON persistence
+    remote/           # web remote control (same-LAN browser)
+      remote_service.py # HTTP routes -> controller/playlist
+      http_server.py  # minimal HTTP/1.1 on QTcpServer
+      state.py        # controller/playlist -> JSON snapshots
+      web.py          # single-file HTML remote page
   ui/                 # PyQt6 widgets
     main_window.py    # window, menu bar, wiring
     control_bar.py    # transport controls
@@ -83,5 +108,5 @@ src/desktop_music/
     render_icon.py    # regenerate PNGs from the SVG via QtSvg
 ```
 
-State (playlist, volume, play mode, EQ preset, shortcuts) is stored at
-`~/.config/desktop-music/state.json`.
+State (playlist, volume, play mode, EQ preset, shortcuts, web-remote on/off)
+is stored at `~/.config/desktop-music/state.json`.

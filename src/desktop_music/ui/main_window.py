@@ -69,6 +69,10 @@ class MainWindow(QMainWindow):
         self._auto_hide_timer: QTimer | None = None
         # menu action created in _build_menu; declared here for early access
         self._act_compressor = None
+                # Remote-control service (HTTP server + web remote page). Created lazily
+        # when first enabled; the menu action is wired in _build_menu.
+        self._remote = None
+        self._act_remote = None
         # OSD stays suppressed until startup wiring + state restore finish, so
         # programmatic volume/rate changes on launch don't flash the overlay.
         self._osd_ready = False
@@ -335,6 +339,11 @@ class MainWindow(QMainWindow):
         act_keys = QAction("Keyboard Shortcuts\u2026", self)
         act_keys.triggered.connect(self.open_shortcut_dialog)
         tools_menu.addAction(act_keys)
+        # Remote control (phone app over LAN) — checkable on/off toggle.
+        self._act_remote = QAction("Remote Control (web browser)", self)
+        self._act_remote.setCheckable(True)
+        self._act_remote.toggled.connect(self._on_remote_toggled)
+        tools_menu.addAction(self._act_remote)
 
         # keep the group menus for assembling the pop-up menu on demand
         self._menu_groups: list[QMenu] = [
@@ -828,6 +837,9 @@ class MainWindow(QMainWindow):
             self._act_compressor.setChecked(self._controller.compressor)
         self._shortcuts.load_state(data.get("shortcuts", {}))
         self._on_play_mode_changed()
+        # Restore remote-control enablement last, so the controller/playlist
+        # are fully wired before the service starts serving requests.
+        self._restore_remote_state(data)
 
     def _save_state(self) -> None:
         self._settings.update(
@@ -838,6 +850,7 @@ class MainWindow(QMainWindow):
                 "eq_preset": self._equalizer.preset_index,
                 "compressor": self._controller.compressor,
                 "shortcuts": self._shortcuts.to_state(),
+                "remote_enabled": self.remote_enabled,
             }
         )
         try:
@@ -932,8 +945,72 @@ class MainWindow(QMainWindow):
     def set_rate(self, rate: float) -> None:
         self._controller.set_rate(rate)
 
+    # -- remote control (phone app over LAN) ------------------------------
+
+    @property
+    def remote(self):
+        """The RemoteService instance when running, else None."""
+        return self._remote
+
+    @property
+    def remote_enabled(self) -> bool:
+        """True while the remote-control service is running."""
+        return self._remote is not None
+
+    def start_remote(self) -> bool:
+        """Start the remote-control service. Returns True on success.
+
+        Idempotent: returns True if already running. On bind failure the
+        service is torn down and the menu toggle is reset so the UI reflects
+        reality.
+        """
+        if self._remote is not None:
+            return True
+        # Imported here (rather than at module load) so the remote stack is
+        # only pulled in when the user actually enables the feature.
+        from desktop_music.services.remote.remote_service import RemoteService
+
+        service = RemoteService(self._controller, self._playlist, parent=self)
+        if not service.start():
+            service.stop()
+            if self._act_remote is not None:
+                self._act_remote.blockSignals(True)
+                self._act_remote.setChecked(False)
+                self._act_remote.blockSignals(False)
+            return False
+        self._remote = service
+        if self._act_remote is not None:
+            self._act_remote.blockSignals(True)
+            self._act_remote.setChecked(True)
+            self._act_remote.blockSignals(False)
+        return True
+
+    def stop_remote(self) -> None:
+        """Stop the remote-control service if running."""
+        if self._remote is None:
+            return
+        self._remote.stop()
+        self._remote.deleteLater()
+        self._remote = None
+        if self._act_remote is not None:
+            self._act_remote.blockSignals(True)
+            self._act_remote.setChecked(False)
+            self._act_remote.blockSignals(False)
+
+    def _on_remote_toggled(self, enabled: bool) -> None:
+        if enabled:
+            self.start_remote()
+        else:
+            self.stop_remote()
+
+    def _restore_remote_state(self, data: dict) -> None:
+        """Enable the remote service on launch if it was on last session."""
+        if bool(data.get("remote_enabled", False)):
+            self.start_remote()
+
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
         self._save_state()
+        self.stop_remote()
         self._central_display.spectrum.closeEvent(event)
         self._controller.shutdown()
         super().closeEvent(event)
