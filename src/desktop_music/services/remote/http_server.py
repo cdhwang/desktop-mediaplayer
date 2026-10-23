@@ -174,6 +174,9 @@ class HttpServer(QObject):
         # routes: list of (method, segments, handler)
         self._routes: list[tuple[str, list[str], Handler]] = []
         self._port = 0
+        # Live file streamers, kept referenced so they aren't garbage
+        # collected mid-transfer; each removes itself on finish/disconnect.
+        self._streamers: set = set()
 
     def _on_deferred(self, socket, response, request) -> None:
         """Send a deferred response, re-entered on the GUI thread."""
@@ -426,41 +429,113 @@ class HttpServer(QObject):
         out += [f"{k}: {v}" for k, v in headers.items()]
         header_blob = ("\r\n".join(out) + "\r\n\r\n").encode("latin-1")
 
+        # Stream the body WITHOUT blocking the event loop. The old code called
+        # socket.waitForBytesWritten() per chunk, which froze the GUI thread
+        # (this runs on it) for slow/aborted clients -- exactly what happens
+        # when the browser switches tracks and reloads <audio>. Instead we
+        # push chunks driven by the socket's bytesWritten signal and bound the
+        # in-flight buffer for backpressure, so the loop never stalls.
         try:
             if socket.state() != QTcpSocket.SocketState.ConnectedState:
                 return
-            socket.write(header_blob)
-            with open(path, "rb") as fh:
-                fh.seek(start)
-                remaining = content_length
-                chunk_size = 64 * 1024
-                while remaining > 0:
-                    # The browser routinely aborts an in-flight Range request
-                    # (seek, buffer full, element reload). Once the socket is
-                    # no longer connected, calling flush()/waitForBytesWritten
-                    # emits "not allowed in UnconnectedState" warnings, so bail
-                    # out as soon as the peer has gone away.
-                    if socket.state() != QTcpSocket.SocketState.ConnectedState:
-                        return
-                    chunk = fh.read(min(chunk_size, remaining))
-                    if not chunk:
-                        break
-                    if socket.write(chunk) == -1:
-                        return
-                    # Flush periodically so Qt drains its write buffer and we
-                    # don't accumulate the whole file in memory.
-                    socket.flush()
-                    # Only block for the drain while still connected; a peer
-                    # disconnect between write() and here would otherwise warn.
-                    if socket.state() != QTcpSocket.SocketState.ConnectedState:
-                        return
-                    socket.waitForBytesWritten(5000)
-                    remaining -= len(chunk)
-            if socket.state() == QTcpSocket.SocketState.ConnectedState:
-                socket.flush()
-                socket.disconnectFromHost()
+            fh = open(path, "rb")  # noqa: SIM115 - closed by the streamer
+            fh.seek(start)
+        except OSError:
+            return
+        if socket.write(header_blob) == -1:
+            fh.close()
+            return
+        streamer = _FileStreamer(socket, fh, content_length)
+        # Keep the streamer alive for the socket's lifetime.
+        self._streamers.add(streamer)
+        streamer.finished.connect(lambda s=streamer: self._streamers.discard(s))
+        streamer.begin()
+
+
+# In-flight bytes we allow buffered in the socket before pausing reads. Bounds
+# memory for a slow client without blocking the event loop.
+_STREAM_HIGH_WATER = 256 * 1024
+_STREAM_CHUNK = 64 * 1024
+
+
+class _FileStreamer(QObject):
+    """Non-blocking file -> socket pump driven by ``bytesWritten``.
+
+    Writes a bounded amount of data, then waits (via the socket's
+    ``bytesWritten`` signal) for Qt to drain it before writing more. This
+    keeps the event loop free so the GUI never freezes while serving a large
+    (or slowly-consumed) transcoded track. Cleans up on completion or when
+    the peer disconnects mid-stream.
+    """
+
+    finished = pyqtSignal()
+
+    def __init__(self, socket: QTcpSocket, fh, remaining: int) -> None:
+        super().__init__(socket)
+        self._socket = socket
+        self._fh = fh
+        self._remaining = int(remaining)
+        self._done = False
+        socket.bytesWritten.connect(self._on_bytes_written)
+        socket.disconnected.connect(self._cleanup)
+
+    def begin(self) -> None:
+        self._pump()
+
+    def _on_bytes_written(self, _n: int) -> None:
+        self._pump()
+
+    def _pump(self) -> None:
+        if self._done:
+            return
+        try:
+            if self._socket.state() != QTcpSocket.SocketState.ConnectedState:
+                self._cleanup()
+                return
+            # Fill the socket buffer up to the high-water mark, then yield to
+            # the event loop; bytesWritten will call us again as it drains.
+            while (
+                self._remaining > 0
+                and self._socket.bytesToWrite() < _STREAM_HIGH_WATER
+            ):
+                chunk = self._fh.read(min(_STREAM_CHUNK, self._remaining))
+                if not chunk:
+                    self._remaining = 0
+                    break
+                if self._socket.write(chunk) == -1:
+                    self._cleanup()
+                    return
+                self._remaining -= len(chunk)
+            if self._remaining <= 0:
+                # All queued; close once Qt has flushed it to the kernel.
+                if self._socket.bytesToWrite() == 0:
+                    self._finish()
         except (RuntimeError, OSError):
-            # socket closed mid-stream (browser aborted) or read error; ignore
+            self._cleanup()
+
+    def _finish(self) -> None:
+        if self._done:
+            return
+        self._done = True
+        try:
+            if self._socket.state() == QTcpSocket.SocketState.ConnectedState:
+                self._socket.disconnectFromHost()
+        except RuntimeError:
+            pass
+        self._close_file()
+        self.finished.emit()
+
+    def _cleanup(self) -> None:
+        if self._done:
+            return
+        self._done = True
+        self._close_file()
+        self.finished.emit()
+
+    def _close_file(self) -> None:
+        try:
+            self._fh.close()
+        except OSError:
             pass
 
 

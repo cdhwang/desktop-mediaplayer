@@ -342,3 +342,53 @@ def test_client_abort_midstream_is_handled(server, qtbot, big_file):
     status, _, body = _http_request_full(qtbot, server.port, "GET", "/big")
     assert status == 200
     assert body == data
+
+
+# -- a stalled (non-reading) client must NOT freeze the event loop --------
+
+
+@pytest.fixture
+def huge_file(tmp_path):
+    # Large enough to overflow the OS/Qt socket write buffer so the server
+    # cannot flush it all at once to a client that never reads.
+    path = tmp_path / "huge.bin"
+    data = bytes(range(256)) * (16 * 1024)  # 4 MiB
+    path.write_bytes(data)
+    return path, data
+
+
+def test_stalled_client_does_not_block_event_loop(server, qtbot, huge_file):
+    """Regression: the old waitForBytesWritten() loop ran on the GUI/event
+    thread and stalled it when a client stopped reading (exactly what the
+    browser does when it switches tracks and abandons the old <audio> load).
+    With non-blocking streaming the loop stays responsive: a concurrent
+    request is served immediately while the stalled transfer is parked."""
+    path, data = huge_file
+    server.add_route("GET", "/huge", lambda req: Response.file(str(path), "audio/mpeg"))
+    server.add_route("GET", "/ping", lambda req: Response.json({"ok": True}))
+
+    # Open a request but NEVER read from the socket, so the server's write
+    # buffer fills and stays full (a stalled consumer).
+    stalled = QTcpSocket()
+    stalled.connectToHost(QHostAddress(QHostAddress.SpecialAddress.LocalHost), server.port)
+    qtbot.waitUntil(
+        lambda: stalled.state() == QTcpSocket.SocketState.ConnectedState, timeout=3000
+    )
+    stalled.write(b"GET /huge HTTP/1.1\r\nHost: localhost\r\n\r\n")
+    stalled.flush()
+
+    # Give the server a moment to start streaming (and fill its buffer).
+    qtbot.wait(150)
+
+    # The event loop must still answer a concurrent request promptly. If the
+    # server were blocking on the stalled socket, this would hang/timeout.
+    import time as _time
+    t0 = _time.monotonic()
+    status, body = _http_request(qtbot, server.port, "GET", "/ping")
+    elapsed = _time.monotonic() - t0
+    assert status == 200
+    assert json.loads(body)["ok"] is True
+    assert elapsed < 2.0  # served immediately, not serialized behind the stall
+
+    stalled.abort()
+    stalled.close()
