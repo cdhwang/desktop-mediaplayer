@@ -470,14 +470,38 @@ class RemoteService(QObject):
         if self._claim_token is None:
             self._claim_token = req_token or uuid.uuid4().hex
         self._claim_seen = time.monotonic()
+
+        # Capture where the desktop is *before* entering remote mode (which
+        # pauses the backend), so the browser can resume from that point
+        # instead of restarting at 0. resume_ms is relative to the current
+        # (cue) segment, matching the per-track MP3 the browser streams.
+        resume_ms = 0
+        was_playing = False
+        ctrl = self._controller
+        if hasattr(ctrl, "current_relative_position_ms"):
+            try:
+                resume_ms = int(ctrl.current_relative_position_ms())
+            except Exception:  # noqa: BLE001
+                resume_ms = 0
+        backend = getattr(ctrl, "backend", None)
+        if backend is not None and hasattr(backend, "is_playing"):
+            try:
+                was_playing = bool(backend.is_playing())
+            except Exception:  # noqa: BLE001
+                was_playing = False
+
         self._set_remote_mode(True)
 
         snap = self._ack()
         snap["audio_token"] = self._claim_token
+        snap["resume_ms"] = max(0, resume_ms)
+        snap["resume_playing"] = was_playing
         _log.info(
-            "claim GRANTED token=%s -> remote_mode=%s muted=%s pos=%s len=%s state=%s",
+            "claim GRANTED token=%s -> remote_mode=%s muted=%s resume_ms=%s "
+            "resume_playing=%s len=%s state=%s",
             self._claim_token, snap.get("remote_mode"), snap.get("muted"),
-            snap.get("position_ms"), snap.get("length_ms"), snap.get("state"),
+            snap.get("resume_ms"), snap.get("resume_playing"),
+            snap.get("length_ms"), snap.get("state"),
         )
         return Response.json(snap)
 

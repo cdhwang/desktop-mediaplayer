@@ -178,6 +178,7 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   var userVolume = 1.0;      // 0..1, applied to the <audio> element
   var muted = false;
   var loading = false;       // transcode/buffering in progress
+  var pendingSeekMs = 0;     // one-shot seek to apply once metadata is ready
 
   // Audio-claim state. The desktop keeps its own audio until this browser
   // explicitly claims it via the "Listen here" toggle. Only when `claimed`
@@ -297,9 +298,13 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
       updateListenButton();
       updateMuteButton();
       applyState(s);
-      // Load whatever the desktop considers current and start playing.
+      // Load whatever the desktop considers current and resume from where it
+      // was (claim hands over the position, not a restart at 0).
       if (typeof s.current_index === "number" && s.current_index >= 0) {
-        loadIndex(s.current_index, true, trackSig(s.current));
+        var resumeMs = (typeof s.resume_ms === "number") ? s.resume_ms : 0;
+        var autoplay = (s.resume_playing !== false);  // default to playing
+        try { console.log("[remote] claim resume: index=" + s.current_index + " resume_ms=" + resumeMs + " playing=" + autoplay); } catch (e) {}
+        loadIndex(s.current_index, autoplay, trackSig(s.current), resumeMs);
       }
     }).catch(function () {
       claimPending = false;
@@ -352,7 +357,7 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
             t.is_cue_track ? 1 : 0].join("|");
   }
 
-  function loadIndex(index, autoplay, sig) {
+  function loadIndex(index, autoplay, sig, seekMs) {
     if (index < 0) return;
     // Only this browser loads/plays audio while it holds the claim. Without
     // a claim the desktop is the audio source, so stay silent.
@@ -361,6 +366,9 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
     loadedSig = sig || "";
     loading = true;
     setConn("loading");
+    // Apply a one-shot seek once the track's metadata (duration) is ready,
+    // so taking over the audio resumes where the desktop was instead of 0.
+    pendingSeekMs = (seekMs && seekMs > 0) ? seekMs : 0;
     audio.src = "/api/audio/" + index;
     audio.load();
     if (autoplay) {
@@ -414,6 +422,16 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   audio.addEventListener("loadedmetadata", function () {
     loading = false;
     setConn("ok");
+    // Resume at the position handed over from the desktop (claim), once we
+    // know the duration so we can clamp. One-shot.
+    if (pendingSeekMs > 0) {
+      var dur = isFinite(audio.duration) ? audio.duration : 0;
+      var target = pendingSeekMs / 1000;
+      if (dur > 0) target = Math.min(target, Math.max(0, dur - 0.25));
+      try { audio.currentTime = target; } catch (e) {}
+      try { console.log("[remote] resume seek to " + target.toFixed(2) + "s (req " + pendingSeekMs + "ms, dur " + dur + "s)"); } catch (e) {}
+      pendingSeekMs = 0;
+    }
     updateProgress();
   });
   audio.addEventListener("canplay", function () { loading = false; setConn("ok"); });

@@ -321,6 +321,19 @@ class PlayerController(QObject):
         """The latest browser-reported playback state, or ``None``."""
         return self._remote_report
 
+    def current_relative_position_ms(self) -> int:
+        """Current playback position relative to the active (cue) segment.
+
+        The browser streams a per-track segment that starts at 0, so when it
+        takes over audio it should resume at the desktop's position *minus*
+        the segment start. Returns 0 when nothing meaningful is playing.
+        """
+        try:
+            abs_ms = max(0, int(self._backend.get_time()))
+        except (TypeError, ValueError):
+            abs_ms = 0
+        return max(0, abs_ms - int(self._seg_start or 0))
+
     # -- media -------------------------------------------------------------
 
     def open(self, path: str, autoplay: bool = True) -> None:

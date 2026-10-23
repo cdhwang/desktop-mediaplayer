@@ -46,19 +46,26 @@ class FakePlayMode:
 
 
 class FakeBackend:
+    def __init__(self):
+        self.time_ms = 0
+        self.playing = False
+
     def get_state(self):
         class _S:
             value = "playing"
         return _S()
 
     def get_time(self):
-        return 0
+        return self.time_ms
 
     def get_length(self):
         return 0
 
     def is_muted(self):
         return False
+
+    def is_playing(self):
+        return self.playing
 
     def get_rate(self):
         return 1.0
@@ -100,6 +107,10 @@ class FakeController:
         self.calls = []
         self.remote_mode = False
         self.remote_report = None
+        self.seg_start = 0
+
+    def current_relative_position_ms(self):
+        return max(0, int(self.backend.get_time()) - int(self.seg_start))
 
     def set_remote_mode(self, enabled):
         self.remote_mode = bool(enabled)
@@ -751,3 +762,63 @@ def test_remote_page_is_not_cached(svc):
     assert resp.status == 200
     cc = resp.headers.get("Cache-Control", "")
     assert "no-store" in cc
+
+
+# -- claim hands over the desktop's playback position ---------------------
+
+
+def _claim_body(token="t1"):
+    from desktop_music.services.remote.http_server import Request
+    import json as _json
+    return Request(
+        method="POST", path="/api/audio/claim", query={}, headers={},
+        body=_json.dumps({"token": token}).encode(),
+    )
+
+
+def test_claim_reports_desktop_position_as_resume():
+    """Claiming returns the desktop's current position (segment-relative) so
+    the browser resumes there instead of restarting at 0."""
+    playlist = FakePlaylist(1)
+    controller = FakeController(playlist)
+    controller.backend.time_ms = 45000
+    controller.backend.playing = True
+    service = RemoteService(controller, playlist, http_port=0)
+
+    resp = service._h_audio_claim(_claim_body("t1"))
+    assert resp.status == 200
+    import json as _json
+    body = _json.loads(resp.body)
+    assert body["resume_ms"] == 45000
+    assert body["resume_playing"] is True
+    assert controller.remote_mode is True
+
+
+def test_claim_resume_subtracts_cue_segment_start():
+    """For a cue segment the resume position is relative to the segment."""
+    playlist = FakePlaylist(1)
+    controller = FakeController(playlist)
+    controller.seg_start = 60000
+    controller.backend.time_ms = 75000  # 15s into the segment
+    controller.backend.playing = True
+    service = RemoteService(controller, playlist, http_port=0)
+
+    resp = service._h_audio_claim(_claim_body("t1"))
+    import json as _json
+    body = _json.loads(resp.body)
+    assert body["resume_ms"] == 15000
+    assert body["resume_playing"] is True
+
+
+def test_claim_resume_playing_false_when_desktop_paused():
+    playlist = FakePlaylist(1)
+    controller = FakeController(playlist)
+    controller.backend.time_ms = 12000
+    controller.backend.playing = False
+    service = RemoteService(controller, playlist, http_port=0)
+
+    resp = service._h_audio_claim(_claim_body("t1"))
+    import json as _json
+    body = _json.loads(resp.body)
+    assert body["resume_ms"] == 12000
+    assert body["resume_playing"] is False
