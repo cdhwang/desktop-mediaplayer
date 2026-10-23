@@ -684,9 +684,18 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   var seek = $("seek");
   seek.addEventListener("input", function () { seeking = true; });
   seek.addEventListener("change", function () {
-    var dur = isFinite(audio.duration) ? audio.duration : 0;
-    if (dur > 0) { audio.currentTime = (seek.value / 1000) * dur; }
-    reportState();
+    var fraction = Math.max(0, Math.min(1, (seek.value || 0) / 1000));
+    if (claimed) {
+      // Browser is the audio source: seek the local <audio>.
+      var dur = isFinite(audio.duration) ? audio.duration : 0;
+      if (dur > 0) { audio.currentTime = fraction * dur; }
+      reportState();
+    } else {
+      // Desktop is the audio source: tell it to seek. Update the time label
+      // optimistically; the next poll will reconcile from the desktop.
+      post("/api/seek", { fraction: fraction });
+      try { console.log("[remote] seek -> desktop fraction=" + fraction.toFixed(3)); } catch (e) {}
+    }
     setTimeout(function () { seeking = false; }, 200);
   });
 
