@@ -350,16 +350,21 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   function updateNowCover(cur, idx) {
     var img = $("nowCover");
     if (cur && cur.has_cover && idx >= 0) {
-      var src = "/api/cover/" + idx;
-      if (img.getAttribute("data-idx") !== String(idx)) {
-        img.setAttribute("data-idx", String(idx));
-        img.src = src;
+      // Key the <img> by the track *identity*, not the index: a playlist
+      // reorder/trim can keep the same index while the underlying track (and
+      // thus its art) changes. The `t=` query only changes when the identity
+      // changes, so the browser does not refetch on every poll, but it also
+      // can never show a stale cover for a reused index.
+      var sig = trackSig(cur);
+      if (img.getAttribute("data-sig") !== sig) {
+        img.setAttribute("data-sig", sig);
+        img.src = "/api/cover/" + idx + "?t=" + encodeURIComponent(sig);
       }
       img.classList.add("show");
     } else {
       img.classList.remove("show");
       img.removeAttribute("src");
-      img.removeAttribute("data-idx");
+      img.removeAttribute("data-sig");
     }
   }
 
@@ -373,7 +378,9 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
 
   function renderPlaylist(pl) {
     if (!pl) return;
-    var sig = pl.count + ":" + pl.tracks.map(function (t) { return t.title + (t.has_cover ? "*" : ""); }).join("|");
+    var sig = pl.count + ":" + pl.tracks.map(function (t) {
+      return trackSig(t) + (t.has_cover ? "*" : "");
+    }).join("|");
     if (sig === lastPlaylistSig) {
       highlightPlaying(pl.current_index);
       return;
@@ -393,7 +400,7 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
         thumb = document.createElement("img");
         thumb.className = "thumb";
         thumb.alt = "";
-        thumb.src = "/api/cover/" + t.index;
+        thumb.src = "/api/cover/" + t.index + "?t=" + encodeURIComponent(trackSig(t));
       }
       var meta = document.createElement("div");
       meta.className = "meta";

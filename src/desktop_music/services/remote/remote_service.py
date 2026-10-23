@@ -136,8 +136,9 @@ class RemoteService(QObject):
 
         ``GET /api/cover/{index}`` returns the cover-art bytes for the track
         at *index* with the sniffed image Content-Type, or 404 when the track
-        has no art. The response is marked cacheable so the browser only
-        fetches each cover once.
+        has no art. The response is marked ``no-store`` so the browser never
+        reuses a stale cover for an index whose track has changed (e.g. the
+        playlist was reordered or trimmed).
         """
         raw_index = req.params.get("index", "")
         try:
@@ -160,7 +161,7 @@ class RemoteService(QObject):
             body=data,
             headers={
                 "Content-Type": content_type,
-                "Cache-Control": "public, max-age=3600",
+                "Cache-Control": "no-store, no-cache, must-revalidate",
             },
         )
 
