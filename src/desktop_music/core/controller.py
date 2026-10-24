@@ -84,6 +84,16 @@ class PlayerController(QObject):
         self._seg_end = 0
         self._seg_pending_seek = False
 
+        # Controller-side mute tracking. We mirror every set_muted() call here
+        # so that state snapshots (and the UI) always see the *intended* mute
+        # state without relying on libVLC's is_muted() read-back, which can
+        # lag behind the set call by a poll cycle (libVLC applies audio
+        # parameters asynchronously). Seeded from the backend at startup.
+        try:
+            self._muted: bool = bool(self._backend.is_muted())
+        except Exception:  # noqa: BLE001
+            self._muted = False
+
         # Remote (browser-playback) mode. When enabled, the browser is the
         # sole audio source: the desktop libVLC backend only *loads* tracks
         # (never auto-plays) and stays muted, while the browser reports its
@@ -245,21 +255,21 @@ class PlayerController(QObject):
             return
         self._remote_mode = enabled
         if enabled:
-            self._pre_remote_muted = self._backend.is_muted()
-            self._backend.set_muted(True)
+            self._pre_remote_muted = self._muted
+            self._set_muted(True)
             # Stop desktop audio from running ahead of the browser: pause the
             # backend if it is currently playing. The track stays loaded so
             # metadata/length remain available.
             if self._backend.is_playing():
                 self._backend.pause()
-            self.volume_changed.emit(self._volume, self._backend.is_muted())
+            self.volume_changed.emit(self._volume, self._muted)
         else:
             # Leaving browser-playback mode: hand audio back to the desktop.
             # Resume from wherever the browser left off (its last reported
             # position) and, if it was playing, keep playing -- now unmuted.
             report = self._remote_report
             self._remote_report = None
-            self._backend.set_muted(self._pre_remote_muted)
+            self._set_muted(self._pre_remote_muted)
 
             resume_ms = 0
             was_playing = False
@@ -291,12 +301,12 @@ class PlayerController(QObject):
                 self._resume_seek_ms = resume_ms
                 self._resume_pause = True
 
-            self.volume_changed.emit(self._volume, self._backend.is_muted())
+            self.volume_changed.emit(self._volume, self._muted)
             _log.info(
                 "remote_mode OFF: resume_ms=%s was_playing=%s seg_start=%s "
                 "report=%s muted_restored=%s",
                 resume_ms, was_playing, self._seg_start, report,
-                self._backend.is_muted(),
+                self._muted,
             )
 
     def set_remote_report(
@@ -414,6 +424,28 @@ class PlayerController(QObject):
         """
         return self._volume
 
+    @property
+    def muted(self) -> bool:
+        """The current mute state as last set by this controller.
+
+        Prefer this over ``backend.is_muted()`` for display and persistence:
+        it reflects the intent immediately, without libVLC's asynchronous
+        audio-parameter read-back lag (which causes ``is_muted()`` to briefly
+        return the *old* value right after a ``set_muted()`` call).
+        """
+        return self._muted
+
+    def _set_muted(self, muted: bool) -> None:
+        """Apply *muted* to the backend and update the controller's own cache.
+
+        All internal code that wants to mute/unmute the backend must go
+        through this helper so ``self._muted`` stays in sync and
+        ``build_state_snapshot`` always reads the intended state rather than
+        libVLC's potentially-lagging ``is_muted()`` result.
+        """
+        self._muted = bool(muted)
+        self._backend.set_muted(self._muted)
+
     def set_volume(self, volume: int) -> None:
         # Trust the value the backend reports it *applied* (clamped), not a
         # read-back of libVLC's live volume, which lags during playback.
@@ -424,7 +456,7 @@ class PlayerController(QObject):
             # Backend didn't return a usable number (e.g. a bare mock);
             # fall back to the requested value, clamped.
             self._volume = max(0, min(100, int(volume)))
-        self.volume_changed.emit(self._volume, self._backend.is_muted())
+        self.volume_changed.emit(self._volume, self._muted)
 
     def change_volume(self, delta: int) -> None:
         # Base the delta on our tracked request value, not a live read-back,
@@ -432,8 +464,8 @@ class PlayerController(QObject):
         self.set_volume(self._volume + delta)
 
     def toggle_mute(self) -> None:
-        self._backend.set_muted(not self._backend.is_muted())
-        self.volume_changed.emit(self._volume, self._backend.is_muted())
+        self._set_muted(not self._muted)
+        self.volume_changed.emit(self._volume, self._muted)
 
     # -- audio compressor --------------------------------------------------
 
@@ -469,7 +501,7 @@ class PlayerController(QObject):
         time_ms = self._backend.get_time()
         if time_ms < 0:
             time_ms = 0
-        muted = self._backend.is_muted()
+        muted = self._muted
         rate = self._backend.get_rate()
         volume = self._volume
 
@@ -486,7 +518,7 @@ class PlayerController(QObject):
 
         # --- restore state ---
         self._volume = self._backend.set_volume(volume)
-        self._backend.set_muted(muted)
+        self._set_muted(muted)
         self._backend.set_rate(rate)
         if path:
             self._backend.load(path)
@@ -509,7 +541,7 @@ class PlayerController(QObject):
 
         self.compressor_changed.emit(self.compressor)
         # re-emit volume so the slider/OSD reflect the restored backend
-        self.volume_changed.emit(self._volume, self._backend.is_muted())
+        self.volume_changed.emit(self._volume, self._muted)
 
     def toggle_compressor(self) -> bool:
         """Flip the compressor on/off and return the new state."""

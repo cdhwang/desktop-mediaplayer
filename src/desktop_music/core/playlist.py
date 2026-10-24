@@ -52,8 +52,8 @@ class Track:
     def display_title(self) -> str:
         """Best-effort display name."""
         if self.title:
-            if self.artist:
-                return f"{self.artist} - {self.title}"
+            # if self.artist:
+            #     return f"{self.artist} - {self.title}"
             return self.title
         return os.path.basename(self.path)
 

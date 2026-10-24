@@ -114,7 +114,8 @@ class _TrackDelegate(QStyledItemDelegate):
             right_reserve = 8
 
         left = rect.adjusted(left_pad, 0, -right_reserve, 0)
-        label = f"{row:02d}.  {title}"
+        # label = f"{row:02d}.  {title}"
+        label = title
         elided = metrics.elidedText(
             label, Qt.TextElideMode.ElideRight, left.width()
         )

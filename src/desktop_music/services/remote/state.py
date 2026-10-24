@@ -196,13 +196,22 @@ def build_state_snapshot(controller: Any, playlist: Any | None = None) -> dict[s
             length_ms = 0
 
     # Volume / mute. The controller tracks the requested volume (avoids
-    # libVLC's read-back lag); mute comes from the backend.
+    # libVLC's read-back lag); mute comes from the controller too, for the
+    # same reason: libVLC's is_muted() can briefly return the previous value
+    # right after set_muted() because audio parameters are applied
+    # asynchronously. Using the controller's own cached _muted value means
+    # build_state_snapshot() always reflects the *intended* state immediately,
+    # which prevents the remote page from seeing a spurious muted→unmuted
+    # flicker when audio is handed back from remote to local playback.
     try:
         volume = int(getattr(controller, "volume", 100))
     except (TypeError, ValueError):
         volume = 100
+    # Prefer controller.muted (controller-side cache) over backend.is_muted().
     muted = False
-    if backend is not None and hasattr(backend, "is_muted"):
+    if hasattr(controller, "muted"):
+        muted = bool(controller.muted)
+    elif backend is not None and hasattr(backend, "is_muted"):
         muted = bool(backend.is_muted())
 
     # Play mode (shuffle / repeat).
