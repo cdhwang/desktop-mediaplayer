@@ -14,16 +14,19 @@ general web server):
   low request volume of a remote control.
 * Routing is injected: the owner registers ``(method, path)`` handlers (with
   optional ``{param}`` path segments) that return a :class:`Response`.
-
-The server is transport-only; it knows nothing about the player. The
-:class:`~desktop_music.services.remote.remote_service.RemoteService` wires
-concrete routes to the controller/playlist.
+* WebSocket connections are upgraded from HTTP/1.1 via ``GET /ws``
+  (or any path registered with :meth:`HttpServer.add_ws_route`). After the
+  handshake the socket is handed to a :class:`WsConnection` which speaks the
+  RFC 6455 framing protocol. Only text frames are used (JSON payloads).
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
+import struct
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -34,6 +37,181 @@ from PyQt6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket
 # Maximum size we will buffer for a single request (headers + body), to avoid
 # unbounded memory use from a misbehaving or malicious client on the LAN.
 _MAX_REQUEST_BYTES = 1 * 1024 * 1024  # 1 MiB
+
+# RFC 6455 WebSocket magic GUID used in the Sec-WebSocket-Accept header.
+_WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+# Maximum size of a single incoming WebSocket frame we accept.
+_WS_MAX_FRAME = 64 * 1024  # 64 KiB
+
+
+def _ws_accept_key(client_key: str) -> str:
+    """Compute the Sec-WebSocket-Accept value from the client's key."""
+    digest = hashlib.sha1((client_key.strip() + _WS_MAGIC).encode()).digest()
+    return base64.b64encode(digest).decode()
+
+
+class WsConnection(QObject):
+    """RFC 6455 WebSocket connection over an already-upgraded ``QTcpSocket``.
+
+    Only text frames are used; binary, ping, pong and continuation frames are
+    handled just enough to keep the connection alive (ping→pong, close→close).
+    The owner calls :meth:`send_text` to push a JSON string to the browser and
+    connects to :attr:`message_received` to process incoming text frames.
+
+    The socket is owned (as a Qt parent) by this object and is closed when
+    :meth:`close` is called or the socket disconnects.
+    """
+
+    # emitted when a complete text frame arrives from the browser
+    message_received = pyqtSignal(str)
+    # emitted when the WebSocket connection is closed (any reason)
+    disconnected = pyqtSignal()
+
+    # RFC 6455 opcodes
+    _OP_CONT  = 0x0
+    _OP_TEXT  = 0x1
+    _OP_BIN   = 0x2
+    _OP_CLOSE = 0x8
+    _OP_PING  = 0x9
+    _OP_PONG  = 0xA
+
+    def __init__(self, socket: QTcpSocket, parent: Optional[QObject] = None) -> None:
+        super().__init__(parent)
+        self._socket = socket
+        self._socket.setParent(self)
+        self._buf = b""
+        self._closed = False
+        socket.readyRead.connect(self._on_ready_read)
+        socket.disconnected.connect(self._on_socket_disconnected)
+
+    # -- public API --------------------------------------------------------
+
+    def send_text(self, text: str) -> None:
+        """Send a UTF-8 text frame to the browser. No-op if already closed."""
+        if self._closed:
+            return
+        try:
+            payload = text.encode("utf-8")
+            self._socket.write(_ws_frame(self._OP_TEXT, payload))
+            self._socket.flush()
+        except RuntimeError:
+            pass
+
+    def close(self, code: int = 1000) -> None:
+        """Send a close frame and shut down the socket."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._socket.write(_ws_frame(self._OP_CLOSE, struct.pack(">H", code)))
+            self._socket.flush()
+            self._socket.disconnectFromHost()
+        except RuntimeError:
+            pass
+
+    # -- internals ---------------------------------------------------------
+
+    def _on_ready_read(self) -> None:
+        try:
+            self._buf += bytes(self._socket.readAll().data())
+        except RuntimeError:
+            return
+        self._parse_frames()
+
+    def _on_socket_disconnected(self) -> None:
+        self._closed = True
+        self.disconnected.emit()
+
+    def _parse_frames(self) -> None:
+        """Parse as many complete frames from ``_buf`` as possible."""
+        while True:
+            frame = self._try_parse_one()
+            if frame is None:
+                break
+            opcode, payload = frame
+            if opcode == self._OP_TEXT:
+                try:
+                    self.message_received.emit(payload.decode("utf-8", "replace"))
+                except Exception:  # noqa: BLE001
+                    pass
+            elif opcode == self._OP_PING:
+                self._send_raw(_ws_frame(self._OP_PONG, payload))
+            elif opcode == self._OP_CLOSE:
+                self.close()
+                break
+            # OP_PONG, OP_BIN, OP_CONT: silently ignore
+
+    def _try_parse_one(self) -> Optional[tuple[int, bytes]]:
+        """Try to extract one complete frame from ``_buf``.
+
+        Returns ``(opcode, unmasked_payload)`` or ``None`` when not enough
+        data has arrived yet. Drops the frame bytes from ``_buf`` on success.
+        """
+        buf = self._buf
+        if len(buf) < 2:
+            return None
+        b0, b1 = buf[0], buf[1]
+        opcode = b0 & 0x0F
+        masked = bool(b1 & 0x80)
+        length = b1 & 0x7F
+
+        offset = 2
+        if length == 126:
+            if len(buf) < offset + 2:
+                return None
+            length = struct.unpack_from(">H", buf, offset)[0]
+            offset += 2
+        elif length == 127:
+            if len(buf) < offset + 8:
+                return None
+            length = struct.unpack_from(">Q", buf, offset)[0]
+            offset += 8
+
+        if length > _WS_MAX_FRAME:
+            # Frame too large: close the connection.
+            self.close(1009)
+            return None
+
+        mask_key = b""
+        if masked:
+            if len(buf) < offset + 4:
+                return None
+            mask_key = buf[offset:offset + 4]
+            offset += 4
+
+        if len(buf) < offset + length:
+            return None
+
+        raw = buf[offset:offset + length]
+        self._buf = buf[offset + length:]
+
+        if masked:
+            payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(raw))
+        else:
+            payload = raw
+
+        return opcode, payload
+
+    def _send_raw(self, data: bytes) -> None:
+        try:
+            if not self._closed:
+                self._socket.write(data)
+                self._socket.flush()
+        except RuntimeError:
+            pass
+
+
+def _ws_frame(opcode: int, payload: bytes) -> bytes:
+    """Build an unmasked RFC 6455 frame (server→client frames are unmasked)."""
+    length = len(payload)
+    header = bytes([0x80 | (opcode & 0x0F)])  # FIN=1
+    if length < 126:
+        header += bytes([length])
+    elif length < 65536:
+        header += bytes([126]) + struct.pack(">H", length)
+    else:
+        header += bytes([127]) + struct.pack(">Q", length)
+    return header + payload
 
 
 @dataclass
@@ -160,6 +338,9 @@ class HttpServer(QObject):
     # GUI thread so the socket is only ever written from its owning thread.
     # Payload types are ``object`` so PyQt doesn't try to marshal QTcpSocket.
     _deferred = pyqtSignal(object, object, object)
+    # Emitted when a WebSocket upgrade succeeds. The WsConnection is passed
+    # as a plain object so PyQt doesn't try to marshal it through type-checking.
+    ws_connected = pyqtSignal(object)
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
@@ -173,6 +354,8 @@ class HttpServer(QObject):
         )
         # routes: list of (method, segments, handler)
         self._routes: list[tuple[str, list[str], Handler]] = []
+        # ws_routes: set of path strings that accept WebSocket upgrades
+        self._ws_paths: set[str] = set()
         self._port = 0
         # Live file streamers, kept referenced so they aren't garbage
         # collected mid-transfer; each removes itself on finish/disconnect.
@@ -200,6 +383,17 @@ class HttpServer(QObject):
         ``Request.params``. Example: ``/api/command/{id}``.
         """
         self._routes.append((method.upper(), _split_path(path), handler))
+
+    def add_ws_route(self, path: str) -> None:
+        """Mark *path* as a WebSocket upgrade endpoint.
+
+        When a ``GET`` request to *path* carries the ``Upgrade: websocket``
+        header the server performs the RFC 6455 handshake and emits
+        :attr:`ws_connected` with the resulting :class:`WsConnection`. The
+        socket is then owned by the ``WsConnection`` and no longer participates
+        in the normal HTTP request/response cycle.
+        """
+        self._ws_paths.add(path)
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -275,6 +469,42 @@ class HttpServer(QObject):
                 name, _, value = line.partition(":")
                 headers[name.strip().lower()] = value.strip()
 
+        # -- WebSocket upgrade detection ----------------------------------
+        # Must check before waiting for a body: WS upgrade requests have no
+        # body and ``Connection: close`` must NOT be sent.
+        split = urlsplit(target)
+        path = unquote(split.path)
+        if (
+            method == "GET"
+            and path in self._ws_paths
+            and headers.get("upgrade", "").lower() == "websocket"
+        ):
+            ws_key = headers.get("sec-websocket-key", "")
+            if not ws_key:
+                self._send(socket, Response.error(400, "missing Sec-WebSocket-Key"))
+                return
+            accept = _ws_accept_key(ws_key)
+            handshake = (
+                "HTTP/1.1 101 Switching Protocols\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Accept: {accept}\r\n"
+                "\r\n"
+            ).encode("latin-1")
+            # Disconnect the HTTP readyRead handler so it no longer steals
+            # bytes from the WebSocket stream, then hand the socket over.
+            try:
+                socket.readyRead.disconnect()
+                socket.disconnected.disconnect(socket.deleteLater)
+            except RuntimeError:
+                pass
+            socket.write(handshake)
+            socket.flush()
+            conn = WsConnection(socket, self)
+            self.ws_connected.emit(conn)
+            return
+        # -- end WebSocket ------------------------------------------------
+
         # Wait for the full body if Content-Length says there is more.
         content_length = 0
         if "content-length" in headers:
@@ -287,8 +517,6 @@ class HttpServer(QObject):
             return  # wait for the rest of the body
         body = buf[body_start:body_start + content_length]
 
-        split = urlsplit(target)
-        path = unquote(split.path)
         query = {k: v[0] for k, v in parse_qs(split.query).items()}
 
         request = Request(
@@ -586,7 +814,6 @@ def _parse_range(header: str, size: int) -> Optional[tuple[int, int]]:
 
 def _split_path(path: str) -> list[str]:
     """Split a URL path into non-empty segments."""
-    return [seg for seg in path.split("/") if seg != ""]
     return [seg for seg in path.split("/") if seg != ""]
 
 

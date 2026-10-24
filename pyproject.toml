@@ -24,6 +24,10 @@ desktop-music-cli = "desktop_music:main"
 requires = ["uv_build>=0.12.4,<0.13.0"]
 build-backend = "uv_build"
 
+[tool.uv_build]
+# Include the remote-control HTML page alongside its Python module.
+include = ["src/desktop_music/services/remote/remote.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import json
 import logging
 import time
 import uuid
@@ -32,7 +33,7 @@ from PyQt6.QtNetwork import QHostAddress
 
 from desktop_music.services.remote import state as rstate
 from desktop_music.services.remote.http_server import HttpServer, Request, Response
-from desktop_music.services.remote.web import REMOTE_PAGE_HTML
+from desktop_music.services.remote.web import load_remote_page
 
 _log = logging.getLogger("desktop_music.remote")
 
@@ -143,6 +144,14 @@ class RemoteService(QObject):
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(2)
 
+        # Active WebSocket connections. The server pushes state snapshots to
+        # all of them whenever something meaningful changes (track, play/pause,
+        # volume, mute, shuffle, repeat). Position drift corrections (every
+        # ~10 s) are driven by controller.position_changed in the same way.
+        self._ws_clients: list = []  # list[WsConnection]
+        self._http.ws_connected.connect(self._on_ws_connected)
+        self._http.add_ws_route("/ws")
+
         # Audio-claim state. The desktop keeps its own audio by default; it
         # only hands audio to the browser (controller.set_remote_mode(True))
         # when a client *explicitly* claims it, and only one client may hold
@@ -166,10 +175,12 @@ class RemoteService(QObject):
         ok = self._http.start(self._http_port, address)
         if ok:
             self._claim_timer.start()
+            self._connect_signals()
         return ok
 
     def stop(self) -> None:
         self._claim_timer.stop()
+        self._disconnect_signals()
         # Wait for in-flight transcode workers to finish so their deferred
         # responses don't fire against a torn-down HTTP server. Bounded wait
         # so shutdown can't hang forever on a stuck ffmpeg.
@@ -178,7 +189,79 @@ class RemoteService(QObject):
         # Release any outstanding claim so the desktop regains its audio when
         # the remote feature is turned off.
         self._release_claim()
+        # Close all WebSocket connections cleanly before stopping the server.
+        for conn in list(self._ws_clients):
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+        self._ws_clients.clear()
         self._http.stop()
+
+    def _connect_signals(self) -> None:
+        """Wire controller/playlist signals to WebSocket broadcast."""
+        ctrl = self._controller
+        # Immediate push on state changes (play/pause/stop, track, volume, mode).
+        # ``seeked`` is included so a desktop seek is reflected in the browser
+        # without waiting for the 10-second drift-correction timer.
+        for sig_name in ("state_changed", "media_changed",
+                         "volume_changed", "play_mode_changed", "seeked"):
+            sig = getattr(ctrl, sig_name, None)
+            if sig is not None:
+                sig.connect(self._on_state_signal)
+        # Playlist changes: model signals rowsInserted/rowsRemoved/dataChanged
+        # live on the playlist model.
+        pl = self._playlist
+        for sig_name in ("rowsInserted", "rowsRemoved", "dataChanged",
+                         "modelReset", "layoutChanged"):
+            sig = getattr(pl, sig_name, None)
+            if sig is not None:
+                sig.connect(self._on_playlist_signal)
+        # Drift-correction timer: push a full state snapshot (with position)
+        # every 10 s so the browser seek bar stays in sync without polling.
+        # This runs only while the service is active (started).
+        if not hasattr(self, "_drift_timer"):
+            self._drift_timer = QTimer(self)
+            self._drift_timer.setInterval(10_000)
+            self._drift_timer.timeout.connect(self._on_drift_tick)
+        self._drift_timer.start()
+
+    def _disconnect_signals(self) -> None:
+        """Disconnect all signal connections made in _connect_signals."""
+        ctrl = self._controller
+        for sig_name in ("state_changed", "media_changed",
+                         "volume_changed", "play_mode_changed", "seeked"):
+            sig = getattr(ctrl, sig_name, None)
+            if sig is not None:
+                try:
+                    sig.disconnect(self._on_state_signal)
+                except RuntimeError:
+                    pass
+        pl = self._playlist
+        for sig_name in ("rowsInserted", "rowsRemoved", "dataChanged",
+                         "modelReset", "layoutChanged"):
+            sig = getattr(pl, sig_name, None)
+            if sig is not None:
+                try:
+                    sig.disconnect(self._on_playlist_signal)
+                except RuntimeError:
+                    pass
+        if hasattr(self, "_drift_timer"):
+            self._drift_timer.stop()
+
+    def _on_state_signal(self, *_args) -> None:
+        """Broadcast the current state to all WS clients on any state change."""
+        self._ws_broadcast()
+
+    def _on_playlist_signal(self, *_args) -> None:
+        """Broadcast when the playlist changes."""
+        self._ws_broadcast()
+
+    def _on_drift_tick(self) -> None:
+        """Periodic drift-correction push. Sends full state (including
+        position_ms) so the browser can correct its local seek bar without
+        polling. Skipped when no WS clients are connected."""
+        self._ws_broadcast()
 
     @property
     def http(self) -> HttpServer:
@@ -187,6 +270,46 @@ class RemoteService(QObject):
     @property
     def http_port(self) -> int:
         return self._http.port or self._http_port
+
+    # -- WebSocket ---------------------------------------------------------
+
+    def _on_ws_connected(self, conn) -> None:
+        """Handle a new WebSocket upgrade. Send the current state immediately."""
+        self._ws_clients.append(conn)
+        conn.disconnected.connect(lambda c=conn: self._on_ws_disconnected(c))
+        # Push the full current state so the browser has something to render
+        # without waiting for the first server-side change.
+        self._ws_send_one(conn, self._ws_snapshot())
+
+    def _on_ws_disconnected(self, conn) -> None:
+        try:
+            self._ws_clients.remove(conn)
+        except ValueError:
+            pass
+
+    def _ws_snapshot(self) -> dict:
+        """Build the state payload to push over WebSocket."""
+        snap = rstate.build_state_snapshot(self._controller, self._playlist)
+        snap["playlist"] = rstate.build_playlist(self._playlist)
+        return snap
+
+    def _ws_send_one(self, conn, data: dict) -> None:
+        try:
+            conn.send_text(json.dumps(data))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _ws_broadcast(self, data: dict | None = None) -> None:
+        """Push *data* (or the current snapshot) to all WebSocket clients."""
+        if not self._ws_clients:
+            return
+        payload = data if data is not None else self._ws_snapshot()
+        text = json.dumps(payload)
+        for conn in list(self._ws_clients):
+            try:
+                conn.send_text(text)
+            except Exception:  # noqa: BLE001
+                pass
 
     # -- routes ------------------------------------------------------------
 
@@ -219,7 +342,7 @@ class RemoteService(QObject):
     def _h_page(self, _req: Request) -> Response:
         return Response(
             status=200,
-            body=REMOTE_PAGE_HTML.encode("utf-8"),
+            body=load_remote_page().encode("utf-8"),
             headers={
                 "Content-Type": "text/html; charset=utf-8",
                 # The page is a single inline HTML+JS blob that changes with

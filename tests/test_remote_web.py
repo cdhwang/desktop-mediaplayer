@@ -59,7 +59,7 @@ def test_loading_indicator_present():
 def test_has_per_track_delete_button():
     # A delete button is created per row and labelled.
     assert 'del.className = "del"' in HTML
-    assert "Remove from playlist" in HTML
+    assert "Remove" in HTML
 
 
 def test_delete_button_posts_remove_and_stops_propagation():

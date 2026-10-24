@@ -317,14 +317,36 @@ class PlayerController(QObject):
         In remote mode the browser is the source of truth for "where are we
         in the track", so the desktop UI mirrors these values rather than the
         (paused, position-0) libVLC backend. Ignored when remote mode is off.
+
+        When *position_ms* is negative the call is a heartbeat-only report:
+        the claim stays alive but the stored position/length are not updated
+        (only the state string is refreshed so pause/play transitions are
+        still reflected immediately on the desktop UI).
         """
         if not self._remote_mode:
             return
-        self._remote_report = {
-            "position_ms": max(0, int(position_ms)),
-            "length_ms": max(0, int(length_ms)),
-            "state": str(state or ""),
-        }
+        new_state = str(state or "")
+        prev_state = (
+            self._remote_report.get("state", "") if isinstance(self._remote_report, dict) else ""
+        )
+        if position_ms < 0:
+            # Heartbeat only: keep the last known position but update state.
+            if isinstance(self._remote_report, dict):
+                self._remote_report["state"] = new_state
+        else:
+            self._remote_report = {
+                "position_ms": max(0, int(position_ms)),
+                "length_ms": max(0, int(length_ms)),
+                "state": new_state,
+            }
+        # Emit state_changed when the browser's play/pause state transitions
+        # so the desktop UI (play button icon, OSD) updates immediately.
+        if new_state != prev_state:
+            try:
+                mapped = PlaybackState(new_state)
+            except ValueError:
+                mapped = PlaybackState.PAUSED
+            self.state_changed.emit(mapped)
 
     @property
     def remote_report(self) -> dict | None:
@@ -625,6 +647,18 @@ class PlayerController(QObject):
         time_ms = self._backend.get_time()
         if time_ms < 0:
             time_ms = 0
+
+        # In remote mode the browser is the audio source: use its reported
+        # position/length instead of the (paused, stale) backend values so
+        # the desktop seek bar and OSD mirror what the listener actually hears.
+        if self._remote_mode and isinstance(self._remote_report, dict):
+            r_pos = self._remote_report.get("position_ms", 0)
+            r_len = self._remote_report.get("length_ms", 0)
+            if r_pos is not None and r_pos >= 0:
+                # position_ms == -1 means heartbeat-only (no position update);
+                # keep the last emitted value in that case.
+                self.position_changed.emit(int(r_pos), max(0, int(r_len or 0)))
+            return
 
         # Cue track: auto-advance at the segment boundary and report time
         # relative to the segment so the UI shows per-track position/length.
