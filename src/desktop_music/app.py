@@ -6,11 +6,13 @@ import sys
 
 from PyQt6.QtWidgets import QApplication
 
-from desktop_music.constants import APP_NAME, ORG_NAME, load_app_icon
-
-# Stable AppUserModelID so Windows groups the taskbar button under our own
-# identity (required for the play/pause taskbar overlay to attach correctly).
-_APP_USER_MODEL_ID = "desktop-music.DesktopMusic.Player.1"
+from desktop_music.constants import (
+    APP_ICON_ICO_PATH,
+    APP_NAME,
+    APP_USER_MODEL_ID,
+    ORG_NAME,
+    load_app_icon,
+)
 
 
 def create_app(argv: list[str] | None = None) -> QApplication:
@@ -20,9 +22,16 @@ def create_app(argv: list[str] | None = None) -> QApplication:
     QApplication may exist per process.
     """
     # Must run before the first window is created so the taskbar picks it up.
-    from desktop_music.services.taskbar import set_app_user_model_id
+    from desktop_music.services.taskbar import (
+        ensure_app_shortcut,
+        set_app_user_model_id,
+    )
 
-    set_app_user_model_id(_APP_USER_MODEL_ID)
+    set_app_user_model_id(APP_USER_MODEL_ID)
+    # Create a Start-menu shortcut carrying the same AppUserModelID so the
+    # taskbar / jump-list shows "Desktop Music" and our icon instead of the
+    # launching interpreter ("python" + the generic Python icon).
+    ensure_app_shortcut(APP_USER_MODEL_ID, APP_NAME, APP_ICON_ICO_PATH)
 
     app = QApplication.instance()
     if app is None:

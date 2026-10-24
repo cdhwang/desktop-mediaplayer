@@ -11,6 +11,14 @@ ORG_NAME = "desktop-music"
 RESOURCES_DIR = os.path.join(os.path.dirname(__file__), "resources")
 APP_ICON_PATH = os.path.join(RESOURCES_DIR, "app_icon.png")
 
+# Windows .ico (multi-resolution) used for the Start-menu shortcut that gives
+# the taskbar / jump-list its display name and icon (see services.taskbar).
+APP_ICON_ICO_PATH = os.path.join(RESOURCES_DIR, "app_icon.ico")
+
+# Stable AppUserModelID. Windows groups the taskbar button and resolves the
+# jump-list display name/icon from the Start-menu shortcut carrying this ID.
+APP_USER_MODEL_ID = "desktop-music.DesktopMusic.Player.1"
+
 # Individual rendered sizes, used to build a crisp multi-resolution QIcon.
 _APP_ICON_SIZES = (16, 32, 48, 64, 128, 256)
 
