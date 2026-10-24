@@ -147,21 +147,23 @@ Set-ItemProperty -Path $appKey -Name "FriendlyAppName" -Value $FriendlyName
 $appIconKey = Join-Path $appKey "DefaultIcon"
 New-Item -Path $appIconKey -Force | Out-Null
 if ($AppIconPath) {
-    Set-ItemProperty -Path $appIconKey -Name "(default)" -Value "`"$AppIconPath`",0"
+    # DefaultIcon must be an UNQUOTED, fully-qualified path + index. A quoted
+    # path makes Explorer fail to load it and fall back to a generic icon.
+    Set-ItemProperty -Path $appIconKey -Name "(default)" -Value "$AppIconPath,0"
 } else {
-    Set-ItemProperty -Path $appIconKey -Name "(default)" -Value "`"$Launcher`",0"
+    Set-ItemProperty -Path $appIconKey -Name "(default)" -Value "$Launcher,0"
 }
 
 $appCmdKey = Join-Path $appKey "shell\open\command"
 New-Item -Path $appCmdKey -Force | Out-Null
 Set-ItemProperty -Path $appCmdKey -Name "(default)" -Value $Command
 
-# Advertise which extensions this application supports (used by the dialog).
-$appTypesKey = Join-Path $appKey "SupportedTypes"
-New-Item -Path $appTypesKey -Force | Out-Null
-foreach ($ext in ($AudioExtensions + $VideoExtensions)) {
-    Set-ItemProperty -Path $appTypesKey -Name $ext -Value ""
-}
+# NOTE: we intentionally do NOT register a "SupportedTypes" subkey here.
+# Advertising SupportedTypes makes this Application a *recommended* Open-with
+# handler for every listed extension, which then appears ALONGSIDE the
+# per-type ProgID handler below -> two identical "Desktop Music" rows in the
+# Open-with dialog. The ProgID (registered per extension) is the single
+# source of the Open-with entry, so SupportedTypes is omitted on purpose.
 Write-Host "Registered application '$ExeName' as '$FriendlyName'."
 
 # --- helper: create one media ProgID (friendly name, per-type icon, command) -
@@ -173,9 +175,10 @@ function New-MediaProgId([string]$progId, [string]$label, [string]$iconPath) {
     $iconKey = Join-Path $progKey "DefaultIcon"
     New-Item -Path $iconKey -Force | Out-Null
     if ($iconPath) {
-        Set-ItemProperty -Path $iconKey -Name "(default)" -Value "`"$iconPath`",0"
+        # Unquoted path + index (quoting breaks icon loading in Explorer).
+        Set-ItemProperty -Path $iconKey -Name "(default)" -Value "$iconPath,0"
     } else {
-        Set-ItemProperty -Path $iconKey -Name "(default)" -Value "`"$Launcher`",0"
+        Set-ItemProperty -Path $iconKey -Name "(default)" -Value "$Launcher,0"
         Write-Warning "No .ico found for $progId; using launcher icon."
     }
 
@@ -184,25 +187,22 @@ function New-MediaProgId([string]$progId, [string]$label, [string]$iconPath) {
     Set-ItemProperty -Path $cmdKey -Name "(default)" -Value $Command
 }
 
-# --- helper: wire one extension (OpenWithProgids + OpenWithList + icon) ------
+# --- helper: wire one extension (OpenWithProgids + icon) --------------------
 function Register-Extension([string]$ext, [string]$progId, [string]$iconPath) {
-    # a) ProgID candidate (drives the per-type DefaultIcon once chosen).
+    # a) ProgID candidate: this is the single Open-with entry for the type and
+    #    also drives the per-type DefaultIcon once chosen as default.
     $owpKey = Join-Path $ClassesRoot ($ext + "\OpenWithProgids")
     New-Item -Path $owpKey -Force | Out-Null
     New-ItemProperty -Path $owpKey -Name $progId -PropertyType None `
         -Value ([byte[]]@()) -Force | Out-Null
 
-    # b) Application candidate so the dialog lists the friendly-named launcher.
-    $owlKey = Join-Path $ClassesRoot ($ext + "\OpenWithList")
-    New-Item -Path $owlKey -Force | Out-Null
-    Set-ItemProperty -Path $owlKey -Name $ExeName -Value ""
-
-    # c) Per-extension DefaultIcon so Explorer shows our icon up front
-    #    (unless a UserChoice default overrides the type).
+    # b) Per-extension DefaultIcon so Explorer shows our icon up front
+    #    (unless a UserChoice default overrides the type). Path must be
+    #    UNQUOTED or Explorer fails to load it and shows a generic icon.
     if ($iconPath) {
         $extIconKey = Join-Path $ClassesRoot ($ext + "\DefaultIcon")
         New-Item -Path $extIconKey -Force | Out-Null
-        Set-ItemProperty -Path $extIconKey -Name "(default)" -Value "`"$iconPath`",0"
+        Set-ItemProperty -Path $extIconKey -Name "(default)" -Value "$iconPath,0"
     }
 }
 

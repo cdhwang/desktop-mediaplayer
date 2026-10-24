@@ -20,9 +20,50 @@ Typical use::
 
 from __future__ import annotations
 
+import os
 import sys
 
 _IS_WINDOWS = sys.platform == "win32"
+
+# Name of the GUI launcher executable generated from pyproject's
+# ``[project.gui-scripts] desktop-music`` entry. Windows resolves the
+# "Open with" menu's icon/name from this executable's ``Applications``
+# registration, so we prefer it as both the shortcut target and the
+# file-association command.
+_LAUNCHER_EXE = "desktop-music.exe"
+
+
+def find_app_launcher() -> str:
+    """Return the path to the app's dedicated GUI launcher exe, or "".
+
+    Looks for ``desktop-music.exe`` (the ``[project.gui-scripts]`` console
+    launcher) next to the running interpreter and in common venv/user-base
+    ``Scripts`` locations. Returns an empty string when it can't be found
+    (e.g. running from a source checkout that was never ``pip install``-ed),
+    in which case callers fall back to launching via ``python -m``.
+    """
+    if not _IS_WINDOWS:
+        return ""
+    candidates = []
+    exe_dir = os.path.dirname(sys.executable)
+    candidates.append(os.path.join(exe_dir, _LAUNCHER_EXE))
+    candidates.append(os.path.join(exe_dir, "Scripts", _LAUNCHER_EXE))
+    candidates.append(os.path.join(sys.prefix, "Scripts", _LAUNCHER_EXE))
+    # ``pip install --user`` script location.
+    try:
+        import site
+
+        user_base = getattr(site, "getuserbase", lambda: "")()
+        if user_base:
+            candidates.append(
+                os.path.join(user_base, "Scripts", _LAUNCHER_EXE)
+            )
+    except Exception:  # noqa: BLE001
+        pass
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return ""
 
 
 def set_app_user_model_id(app_id: str) -> None:
@@ -77,6 +118,22 @@ def ensure_app_shortcut(
         _ensure_app_shortcut_win(app_id, display_name, icon_path)
     except Exception:  # noqa: BLE001 - cosmetic only, never break startup
         pass
+
+
+def ensure_file_association_icon(
+    display_name: str,
+    icon_path: str = "",
+) -> None:
+    """Deprecated no-op kept for backward compatibility.
+
+    File-type association (the Explorer "Open with" entry, its icon, and the
+    per-type file icons) is handled entirely by the explicit, user-run
+    ``scripts/register_windows.ps1`` so there is a single source of truth and
+    no duplicate handlers. Registering it again here at every startup created
+    a second "Desktop Music" entry that conflicted with the ProgID handlers
+    the script installs, so the app no longer touches file associations.
+    """
+    return None
 
 
 class TaskbarOverlay:
@@ -434,18 +491,27 @@ if _IS_WINDOWS:  # pragma: no cover - exercised only on Windows
         try:
             import sys as _sys
 
-            # Target the interpreter; a windowless launch prefers pythonw.exe.
-            target = _sys.executable
-            pythonw = _os.path.join(_os.path.dirname(target), "pythonw.exe")
-            if _os.path.exists(pythonw):
-                target = pythonw
+            # Prefer the app's dedicated GUI launcher (desktop-music.exe):
+            # Windows then shows our name/icon in the "Open with" menu and the
+            # shortcut has no visible console. Fall back to pythonw -m when the
+            # launcher isn't installed (source checkout).
+            launcher = find_app_launcher()
+            if launcher:
+                target = launcher
+                args = ""
+            else:
+                target = _sys.executable
+                pythonw = _os.path.join(_os.path.dirname(target), "pythonw.exe")
+                if _os.path.exists(pythonw):
+                    target = pythonw
+                args = "-m desktop_music"
 
             set_path = _SetStr_t(sl_vtbl.SetPath)
             set_path(link, target)
 
-            # Launch our package as a module: `-m desktop_music`.
+            # Launch arguments (empty when targeting the dedicated launcher).
             set_args = _SetStr_t(sl_vtbl.SetArguments)
-            set_args(link, "-m desktop_music")
+            set_args(link, args)
 
             set_wd = _SetStr_t(sl_vtbl.SetWorkingDirectory)
             set_wd(link, _os.path.dirname(target))
