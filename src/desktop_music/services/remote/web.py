@@ -63,7 +63,7 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   .now-sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
   .now-cover-wrap { display: flex; justify-content: center; margin-top: 12px; }
   .now-cover {
-    width: 180px; height: 180px; border-radius: 12px; object-fit: cover;
+    width: 260px; height: 260px; border-radius: 14px; object-fit: cover;
     background: var(--panel2); border: 1px solid var(--border);
     display: none;
   }
@@ -72,14 +72,14 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   .time { font-size: 12px; color: var(--muted); width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
   input[type=range] { width: 100%; accent-color: var(--accent); }
   .controls { padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
-  .row { display: flex; gap: 10px; justify-content: center; align-items: center; margin: 8px 0; }
+  .row { display: flex; gap: 6px; justify-content: center; align-items: center; margin: 8px 0; }
   button {
     background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
-    border-radius: 10px; padding: 12px 14px; font-size: 16px; cursor: pointer;
-    min-width: 52px; min-height: 48px; transition: background .12s, border-color .12s;
+    border-radius: 10px; padding: 10px 8px; font-size: 15px; cursor: pointer;
+    min-width: 44px; min-height: 44px; transition: background .12s, border-color .12s;
   }
   button:active { background: var(--accent2); }
-  button.wide { flex: 1; }
+  button.flex { flex: 1; }
   button.primary { background: var(--accent); border-color: var(--accent); font-weight: 600; }
   button.toggled { border-color: var(--accent); color: var(--accent); }
   /* Muted is a distinct, filled "warning" state so it's obvious at a glance
@@ -87,9 +87,9 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   button#btnMute.muted {
     background: #5a2730; border-color: #e67e7e; color: #ffd9d9; font-weight: 600;
   }
-  .vol-row { display: flex; align-items: center; gap: 10px; }
+  .vol-row { display: flex; align-items: center; gap: 8px; }
   .vol-row input[type=range] { flex: 1; }
-  .vol-val { width: 42px; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .vol-val { width: 36px; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
   .list { flex: 1; overflow-y: auto; padding: 6px 10px 20px; }
   .track {
     display: flex; align-items: center; gap: 10px; padding: 12px 12px;
@@ -140,23 +140,19 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   <div class="controls">
     <div class="row">
       <button id="btnPrev" title="Previous">⏮</button>
-      <button id="btnPlay" class="primary wide" title="Play/Pause">⏯</button>
+      <button id="btnPlay" class="primary" title="Play/Pause">⏯</button>
       <button id="btnNext" title="Next">⏭</button>
       <button id="btnStop" title="Stop">⏹</button>
+      <button id="btnMute" title="Mute">🔊</button>
+      <button id="btnShuffle" title="Shuffle">🔀</button>
+      <button id="btnRepeat" title="Repeat">🔁</button>
     </div>
     <div class="row vol-row">
-      <button id="btnVolDown" title="Volume down">🔉</button>
       <input type="range" id="vol" min="0" max="100" value="100">
-      <button id="btnVolUp" title="Volume up">🔊</button>
       <span class="vol-val" id="volVal">100</span>
     </div>
     <div class="row">
-      <button id="btnMute" class="wide" title="Mute">🔊 Sound on</button>
-      <button id="btnShuffle" class="wide" title="Shuffle">🔀 Shuffle</button>
-      <button id="btnRepeat" class="wide" title="Repeat">🔁 Repeat</button>
-    </div>
-    <div class="row">
-      <button id="btnListen" class="wide" title="Play the audio in this browser">🎧 Listen here</button>
+      <button id="btnListen" class="flex" title="Play the audio in this browser">🎧 Listen here</button>
     </div>
     <div class="listen-note" id="listenNote"></div>
   </div>
@@ -250,7 +246,7 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
   function updateMuteButton() {
     var btn = $("btnMute");
     btn.classList.toggle("muted", muted);
-    btn.textContent = muted ? "🔇 Muted" : "🔊 Sound on";
+    btn.textContent = muted ? "🔇" : "🔊";
     btn.setAttribute("aria-pressed", muted ? "true" : "false");
     btn.setAttribute("title", muted ? "Unmute" : "Mute");
   }
@@ -521,9 +517,8 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
     var rep = s.repeat || "none";
     var repBtn = $("btnRepeat");
     repBtn.classList.toggle("toggled", rep !== "none");
-    repBtn.textContent = rep === "one" ? "🔂 Repeat 1"
-                        : rep === "all" ? "🔁 Repeat All"
-                        : "🔁 Repeat";
+    repBtn.textContent = rep === "one" ? "🔂" : "🔁";
+    repBtn.setAttribute("title", rep === "one" ? "Repeat 1" : rep === "all" ? "Repeat All" : "Repeat");
     highlightPlaying(s.current_index);
     updateNowCover(cur, s.current_index);
 
@@ -659,8 +654,6 @@ REMOTE_PAGE_HTML = r"""<!DOCTYPE html>
     reportState();
     command("stop");
   });
-  $("btnVolUp").addEventListener("click", function () { command("volume_up"); });
-  $("btnVolDown").addEventListener("click", function () { command("volume_down"); });
   $("btnMute").addEventListener("click", function () {
     muted = !muted;
     audio.muted = muted;
